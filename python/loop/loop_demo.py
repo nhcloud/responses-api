@@ -2,8 +2,10 @@ import argparse
 import asyncio
 import os
 import sys
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
+from time import perf_counter
 from urllib.parse import urlsplit
 
 import httpx
@@ -58,6 +60,20 @@ class RequestTrace:
     async def __call__(self, request: httpx.Request) -> None:
         self.count += 1
         print(f"[{self.label}] {request.method} {request.url.path}", file=sys.stderr)
+
+
+@contextmanager
+def turn_timing(mode: str):
+    started_at = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+    started = perf_counter()
+    print(f"[timing start] mode={mode}; start_utc={started_at}", flush=True)
+    try:
+        yield
+    finally:
+        elapsed = perf_counter() - started
+        ended_at = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+        print(f"\n[timing] mode={mode}; start_utc={started_at}; end_utc={ended_at}; "
+              f"elapsed_seconds={elapsed:.3f} (includes approval wait)", flush=True)
 
 
 async def run_turn(agent: Agent, session, prompt: str, stream: bool) -> None:
@@ -144,11 +160,12 @@ async def main(args: argparse.Namespace) -> None:
                 prompt = DEMO_PROMPTS[turn]
                 turn += 1
                 print(f"\nYou: {prompt}")
-            model_before, mcp_before = model_trace.count, mcp_trace.count
-            async with asyncio.timeout(120):
-                await run_turn(agent, session, prompt, args.stream)
-            print(f"[turn] model HTTP requests={model_trace.count - model_before}; "
-                  f"app MCP HTTP requests={mcp_trace.count - mcp_before}")
+            with turn_timing(args.mode):
+                model_before, mcp_before = model_trace.count, mcp_trace.count
+                async with asyncio.timeout(120):
+                    await run_turn(agent, session, prompt, args.stream)
+                print(f"[turn] model HTTP requests={model_trace.count - model_before}; "
+                      f"app MCP HTTP requests={mcp_trace.count - mcp_before}")
 
 
 async def run_menu() -> None:

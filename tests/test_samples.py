@@ -1,12 +1,14 @@
 import json
 import os
 import queue
+import re
 import shutil
 import socket
 import subprocess
 import sys
 import threading
 from contextlib import contextmanager
+from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -91,7 +93,7 @@ def mcp_url(request, monkeypatch):
 
 
 @contextmanager
-def model_endpoint():
+def model_endpoint(fail_request=False):
     requests = []
 
     class Handler(BaseHTTPRequestHandler):
@@ -101,6 +103,9 @@ def model_endpoint():
         def do_POST(self):
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             requests.append((self.path, body))
+            if fail_request:
+                self.send_error(400, "Scripted model failure")
+                return
             identifier = f"resp_{len(requests)}"
             if self.path.endswith("chat/completions"):
                 messages = body["messages"]
@@ -246,7 +251,37 @@ def run_sample(language, mode, mcp_url, base_url, extra=(), stdin="", expect_suc
     assert (result.returncode == 0) == expect_success, result.stdout + result.stderr
     assert "test-model-key" not in result.stdout + result.stderr
     assert "test-token-not-a-secret" not in result.stdout + result.stderr
+    if expect_success:
+        assert_turn_timings(result.stdout, result.stdout.count("[turn]"))
     return result
+
+
+def assert_turn_timings(output, expected_count):
+    starts = re.findall(r"\[timing start\] mode=([^;]+); start_utc=(\S+)", output)
+    summaries = re.findall(
+        r"\[timing\] mode=([^;]+); start_utc=(\S+); end_utc=(\S+); elapsed_seconds=(\d+\.\d{3}) \(includes approval wait\)",
+        output,
+    )
+    assert len(starts) == len(summaries) == expected_count, output
+    for (start_mode, start_value), (mode, start, end, elapsed) in zip(starts, summaries):
+        assert mode == start_mode
+        assert mode in {"chat", "responses", "hosted-mcp"}
+        assert start == start_value
+        started_at, ended_at = datetime.fromisoformat(start), datetime.fromisoformat(end)
+        assert started_at.utcoffset() == ended_at.utcoffset() == timedelta(0)
+        assert ended_at >= started_at
+        assert float(elapsed) >= 0
+        assert abs((ended_at - started_at).total_seconds() - float(elapsed)) < 0.1
+
+
+@pytest.mark.parametrize("language", ["python", "dotnet"])
+@pytest.mark.parametrize("stream", [False, True])
+def test_timing_on_model_failure(language, stream):
+    with model_endpoint(fail_request=True) as (base_url, requests):
+        result = run_sample(language, "hosted-mcp", "https://mcp.example.com/mcp", base_url,
+                            ["--stream"] if stream else [], expect_success=False)
+    assert len(requests) == 1
+    assert_turn_timings(result.stdout, 1)
 
 
 @pytest.mark.parametrize("language", ["python", "dotnet"])

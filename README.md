@@ -210,6 +210,8 @@ Azure OpenAI receives the MCP credential and tool data in hosted mode. Send only
 
 ## What To Watch
 
+Every question in Chat Completions and both Responses modes prints `[timing start]` before execution, then a `[timing]` summary with `start_utc`, `end_utc`, and `elapsed_seconds` (to three decimal places). This works for menu, streaming, and one-shot runs, including failed or cancelled turns. Elapsed time uses a monotonic clock. Timing covers the full agent turn, including model requests, tool calls, output, and any human approval wait; it excludes client setup, initial MCP discovery, and time spent entering the question. For audience comparisons, use the same prompts/model and account for approval wait: these measurements do not imply that either API is always faster. The optional `--auto-approve` mode removes human approval wait for this read-only demo.
+
 The clients log HTTP methods and paths, not headers or request bodies. At the end of each turn they show model HTTP request counts and **application-side** MCP HTTP request counts. In Chat, expect a model tool request, a real MCP call, and another model request. In Responses with provider-hosted MCP, expect zero application-to-MCP requests even when approval requires additional model requests; the MCP server log shows the provider's tool execution instead.
 
 Counts are observations, not fixed performance guarantees: tool choices, retries, and approvals change them. Streaming prints framework-forwarded provider events; Agent Framework does not necessarily forward every wire-level lifecycle event. Approval prompts deliberately display model-proposed query arguments, so do not record console output containing sensitive user data.

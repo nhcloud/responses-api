@@ -160,6 +160,7 @@ static async Task RunAsync(string[] arguments, CancellationToken cancellationTok
                 Console.WriteLine($"\nYou: {prompt}");
             }
 
+            using var timing = new TurnTiming(mode);
             int modelBefore = modelTrace.Count;
             int mcpBefore = mcpTrace.Count;
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -227,6 +228,27 @@ static Uri ValidateUrl(string value, bool publicOnly)
         (publicOnly && (uri.IsLoopback || !uri.Host.Contains('.'))))
         throw new ArgumentException("Use an HTTPS URL without credentials, query, or fragment. HTTP loopback is allowed only for local clients; hosted MCP needs a public HTTPS URL.");
     return uri;
+}
+
+sealed class TurnTiming : IDisposable
+{
+    private readonly string mode;
+    private readonly DateTimeOffset startedAt = DateTimeOffset.UtcNow;
+    private readonly System.Diagnostics.Stopwatch stopwatch = System.Diagnostics.Stopwatch.StartNew();
+
+    public TurnTiming(string mode)
+    {
+        this.mode = mode;
+        Console.WriteLine($"[timing start] mode={mode}; start_utc={startedAt:O}");
+    }
+
+    public void Dispose()
+    {
+        stopwatch.Stop();
+        DateTimeOffset endedAt = DateTimeOffset.UtcNow;
+        Console.WriteLine(FormattableString.Invariant(
+            $"\n[timing] mode={mode}; start_utc={startedAt:O}; end_utc={endedAt:O}; elapsed_seconds={stopwatch.Elapsed.TotalSeconds:F3} (includes approval wait)"));
+    }
 }
 
 sealed class RequestTrace(string label) : DelegatingHandler(new HttpClientHandler { AllowAutoRedirect = false })
