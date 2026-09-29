@@ -1,0 +1,12 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "build-loop-demo",
+      "type": "process",
+      "command": "dotnet",
+      "args": ["build", "${workspaceFolder}/dotnet/LoopDemo"],
+      "problemMatcher": "$msCompile"
+    }
+  ]
+}

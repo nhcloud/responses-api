@@ -1,0 +1,9 @@
+{
+  "servers": {
+    "who-runs-the-loop-policy": {
+      "type": "stdio",
+      "command": "${command:python.interpreterPath}",
+      "args": ["${workspaceFolder}/mcp_server/server.py", "--stdio"]
+    }
+  }
+}

@@ -1,0 +1,10 @@
+# Sample conventions
+
+These samples accompany docs/WhoRunsTheLoop.pdf. Keep Chat Completions, Responses with client-side MCP, and Responses with provider-hosted MCP distinct. All agent runs use Microsoft Agent Framework.
+
+- .NET targets net10.0 and Microsoft.Agents.AI.OpenAI 1.22.0.
+- Python uses agent-framework-core 1.19.0 and the independently versioned agent-framework-openai 1.14.4.
+- MCP uses the official Python SDK's supported 1.x line for compatibility with Agent Framework.
+- SDK references: https://github.com/microsoft/agent-framework and https://py.sdk.modelcontextprotocol.io/v1/ and https://github.com/modelcontextprotocol/csharp-sdk.
+- Never log authorization headers, API keys, or raw model request bodies. The policy catalog is intentionally fictional and read-only.
+- Validate with `dotnet build dotnet/LoopDemo` followed by `python -m pytest tests -q` in the configured virtual environment.

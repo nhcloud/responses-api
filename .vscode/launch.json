@@ -1,0 +1,33 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Python: policy MCP HTTP server",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/mcp_server/server.py",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "envFile": "${workspaceFolder}/.env"
+    },
+    {
+      "name": "Python: API comparison",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/python/loop_demo.py",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "envFile": "${workspaceFolder}/.env"
+    },
+    {
+      "name": ".NET: API comparison",
+      "type": "coreclr",
+      "request": "launch",
+      "preLaunchTask": "build-loop-demo",
+      "program": "${workspaceFolder}/dotnet/LoopDemo/bin/Debug/net10.0/LoopDemo.dll",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "env": { "DOTNET_ENVIRONMENT": "Development" }
+    }
+  ]
+}

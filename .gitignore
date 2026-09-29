@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+**/bin/
+**/obj/
+.env
+.env.*
+!.env.example
+/dotnet/LoopDemo/appsettings.development.json
