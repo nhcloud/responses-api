@@ -1,9 +1,14 @@
 {
   "servers": {
-    "who-runs-the-loop-policy": {
+    "who-runs-the-loop-policy-python": {
       "type": "stdio",
       "command": "${command:python.interpreterPath}",
-      "args": ["${workspaceFolder}/mcp_server/server.py", "--stdio"]
+      "args": ["${workspaceFolder}/python/mcp_server/server.py", "--stdio"]
+    },
+    "who-runs-the-loop-policy-dotnet": {
+      "type": "stdio",
+      "command": "dotnet",
+      "args": ["${workspaceFolder}/dotnet/mcp_server/bin/Debug/net10.0/PolicyMcpServer.dll", "--stdio"]
     }
   }
 }

@@ -1,5 +1,6 @@
 import json
 import os
+import queue
 import shutil
 import socket
 import subprocess
@@ -12,20 +13,62 @@ from pathlib import Path
 import httpx
 import pytest
 import uvicorn
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
+from mcp.client.streamable_http import streamable_http_client
 
-import mcp_server.server as policy_server
-from mcp_server.server import create_app, search_policy
-from python.loop_demo import validate_url
+import python.mcp_server.server as policy_server
+from python.mcp_server.server import create_app, search_policy
+from python.loop.loop_demo import validate_url
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-@pytest.fixture
-def mcp_url(monkeypatch):
+@contextmanager
+def dotnet_mcp_server(settings=None, assembly=None):
+    assembly = assembly or ROOT / "dotnet/mcp_server/bin/Debug/net10.0/PolicyMcpServer.dll"
+    assert assembly.exists(), "Run dotnet build dotnet/mcp_server first"
+    environment = os.environ | {
+        "MCP_AUTH_TOKEN": "test-token-not-a-secret", "MCP_HOST": "127.0.0.1",
+        "MCP_PUBLIC_HOST": "policy.example.test", "PORT": "0", "DOTNET_ENVIRONMENT": "Production",
+    } | (settings or {})
+    environment = {name: value for name, value in environment.items() if value is not None}
+    with subprocess.Popen(["dotnet", str(assembly)], cwd=ROOT, env=environment,
+                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True) as process:
+        started = queue.Queue()
+        output = []
+
+        def read_output():
+            for line in process.stdout:
+                output.append(line)
+                if "Now listening on: " in line:
+                    started.put(line.split("Now listening on: ", 1)[1].strip() + "/mcp")
+
+        reader = threading.Thread(target=read_output, daemon=True)
+        reader.start()
+        try:
+            try:
+                url = started.get(timeout=15)
+            except queue.Empty:
+                pytest.fail(".NET MCP server did not start: " + "".join(output))
+            yield url
+        finally:
+            process.terminate()
+            process.wait(timeout=10)
+            reader.join(timeout=10)
+        assert "test-token-not-a-secret" not in "".join(output)
+
+
+@pytest.fixture(params=["python", "dotnet"])
+def mcp_url(request, monkeypatch):
+    if request.param == "dotnet":
+        with dotnet_mcp_server() as url:
+            yield url
+        return
     monkeypatch.setenv("MCP_AUTH_TOKEN", "test-token-not-a-secret")
     monkeypatch.setenv("MCP_HOST", "127.0.0.1")
-    monkeypatch.delenv("MCP_PUBLIC_HOST", raising=False)
+    monkeypatch.setenv("MCP_PUBLIC_HOST", "policy.example.test")
     ready = threading.Event()
 
     class TestServer(uvicorn.Server):
@@ -157,11 +200,11 @@ def run_sample(language, mode, mcp_url, base_url, extra=(), stdin="", expect_suc
     if language == "dotnet":
         if not shutil.which("dotnet"):
             pytest.skip(".NET SDK not installed")
-        assembly = ROOT / "dotnet/LoopDemo/bin/Debug/net10.0/LoopDemo.dll"
-        assert assembly.exists(), "Run dotnet build dotnet/LoopDemo first"
+        assembly = ROOT / "dotnet/loop/bin/Debug/net10.0/LoopDemo.dll"
+        assert assembly.exists(), "Run dotnet build dotnet/loop first"
         command = ["dotnet", str(assembly)]
     else:
-        command = [sys.executable, str(ROOT / "python/loop_demo.py")]
+        command = [sys.executable, str(ROOT / "python/loop/loop_demo.py")]
     environment = os.environ | {
         "AZURE_OPENAI_API_KEY": "test-model-key", "AZURE_OPENAI_DEPLOYMENT_NAME": "test-deployment",
         "AZURE_OPENAI_ENDPOINT": base_url, "MCP_SERVER_URL": mcp_url,
@@ -188,11 +231,11 @@ def run_sample(language, mode, mcp_url, base_url, extra=(), stdin="", expect_suc
             environment.update(DOTNET_ENVIRONMENT="Development" if development else "Production",
                                APPDATA=str(configuration_directory / "user-data"), HOME=str(configuration_directory / "home"))
         else:
-            script_directory = configuration_directory / "python"
-            script_directory.mkdir()
-            shutil.copy2(ROOT / "python/loop_demo.py", script_directory / "loop_demo.py")
+            script_directory = configuration_directory / "python/loop"
+            script_directory.mkdir(parents=True)
+            shutil.copy2(ROOT / "python/loop/loop_demo.py", script_directory / "loop_demo.py")
             command = [sys.executable, str(script_directory / "loop_demo.py")]
-            (configuration_directory / ".env").write_text(
+            (configuration_directory / "python/.env").write_text(
                 "\n".join(f"{name}={value}" for name, value in settings.items()), encoding="utf-8",
             )
             environment["PYTHON_DOTENV_DISABLED"] = "0"
@@ -286,6 +329,49 @@ def test_mcp_server_file_configuration(tmp_path, monkeypatch):
     assert captured["app"].token == "test-env-token"
 
 
+@pytest.mark.parametrize("development", [False, True])
+@pytest.mark.parametrize("token_override", [None, "environment-token"])
+def test_dotnet_mcp_server_file_configuration(tmp_path, development, token_override):
+    output = ROOT / "dotnet/mcp_server/bin/Debug/net10.0"
+    shutil.copytree(output, tmp_path, dirs_exist_ok=True)
+    (tmp_path / "appsettings.json").write_text(json.dumps({
+        "MCP_HOST": "127.0.0.1", "PORT": "0", "MCP_PUBLIC_HOST": "",
+        "MCP_AUTH_TOKEN": "base-file-token",
+    }), encoding="utf-8")
+    (tmp_path / "appsettings.development.json").write_text(json.dumps({
+        "MCP_AUTH_TOKEN": "development-file-token",
+    }), encoding="utf-8")
+    settings = {
+        "MCP_HOST": None, "PORT": None, "MCP_PUBLIC_HOST": None, "MCP_AUTH_TOKEN": token_override,
+        "DOTNET_ENVIRONMENT": "Development" if development else "Production",
+        "APPDATA": str(tmp_path / "user-data"), "HOME": str(tmp_path / "home"),
+    }
+    expected_token = token_override or ("development-file-token" if development else "base-file-token")
+    with dotnet_mcp_server(settings, tmp_path / "PolicyMcpServer.dll") as url:
+        assert httpx.post(url, json={}).status_code == 401
+        headers = {"Authorization": f"Bearer {expected_token}", "Accept": "application/json, text/event-stream"}
+        assert httpx.post(url, json=initialize_request(), headers=headers).status_code == 200
+
+
+@pytest.mark.parametrize("language", ["python", "dotnet"])
+@pytest.mark.parametrize(("settings", "message"), [
+    ({"MCP_HOST": "0.0.0.0"}, "MCP_AUTH_TOKEN"),
+    ({"MCP_PUBLIC_HOST": "policy.example.test"}, "MCP_AUTH_TOKEN"),
+    ({"MCP_PUBLIC_HOST": "https://policy.example.test/mcp", "MCP_AUTH_TOKEN": "test-token"}, "MCP_PUBLIC_HOST"),
+])
+def test_mcp_rejects_unsafe_startup(language, settings, message):
+    command = (["dotnet", str(ROOT / "dotnet/mcp_server/bin/Debug/net10.0/PolicyMcpServer.dll")]
+               if language == "dotnet" else [sys.executable, str(ROOT / "python/mcp_server/server.py")])
+    environment = os.environ | {
+        "MCP_HOST": "127.0.0.1", "PORT": "0", "MCP_AUTH_TOKEN": "", "MCP_PUBLIC_HOST": "",
+        "DOTNET_ENVIRONMENT": "Production", "PYTHON_DOTENV_DISABLED": "1",
+    } | settings
+    result = subprocess.run(command, cwd=ROOT, env=environment, capture_output=True, text=True, timeout=15)
+    assert result.returncode != 0
+    assert message in result.stderr
+    assert "test-token" not in result.stdout + result.stderr
+
+
 @pytest.mark.parametrize("language", ["python", "dotnet"])
 @pytest.mark.parametrize("mode", ["chat", "responses", "hosted-mcp"])
 @pytest.mark.parametrize("stream", [False, True])
@@ -332,12 +418,81 @@ def test_hosted_approval(language, answer, stream):
     assert ("TRAVEL-002" if answer == "y" else "Tool denied") in result.stdout
 
 
+def initialize_request():
+    return {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+        "protocolVersion": "2025-11-25", "capabilities": {},
+        "clientInfo": {"name": "parity-test", "version": "1.0"},
+    }}
+
+
 def test_http_auth_and_host_protection(mcp_url):
-    assert httpx.get(mcp_url.replace("/mcp", "/healthz")).status_code == 200
+    health = httpx.get(mcp_url.replace("/mcp", "/healthz"), headers={"Host": "health-probe.internal"})
+    assert health.status_code == 200
+    assert health.json() == {"status": "ok"}
     assert httpx.post(mcp_url, json={}).status_code == 401
     assert httpx.post(mcp_url, json={}, headers={"Authorization": "Bearer wrong"}).status_code == 401
     headers = {"Authorization": "Bearer test-token-not-a-secret", "Host": "attacker.example", "Accept": "application/json, text/event-stream"}
     assert httpx.post(mcp_url, json={}, headers=headers).status_code == 421
+    headers.pop("Host")
+    headers["Origin"] = "https://attacker.example"
+    assert httpx.post(mcp_url, json={}, headers=headers).status_code == 403
+    for host, origin in (("policy.example.test", "https://policy.example.test"),
+                         ("localhost:8000", "http://localhost:8000"),
+                         ("127.0.0.1:8000", "http://127.0.0.1:8000")):
+        headers.update(Host=host, Origin=origin)
+        assert httpx.post(mcp_url, json=initialize_request(), headers=headers).status_code == 200
+
+
+async def assert_policy_contract(session):
+    initialized = await session.initialize()
+    assert initialized.serverInfo.name == "Who Runs the Loop - Policy KB"
+    tools = (await session.list_tools()).tools
+    assert len(tools) == 1
+    tool = tools[0]
+    assert tool.name == "search_policy"
+    assert tool.description == search_policy.__doc__
+    assert tool.inputSchema["type"] == "object"
+    assert tool.inputSchema["required"] == ["query"]
+    assert set(tool.inputSchema["properties"]) == {"query"}
+    assert tool.inputSchema["properties"]["query"]["type"] == "string"
+    assert tool.outputSchema is None
+    assert tool.annotations.readOnlyHint is True
+    assert tool.annotations.destructiveHint is False
+    assert tool.annotations.idempotentHint is True
+    assert tool.annotations.openWorldHint is False
+    for query in ("hotel exceptions", "TRAVEL", "the and", "unfindablexyz", "MEAL\tlimits",
+                  "approval", "x" * 500, "\U0001f600" * 500):
+        result = await session.call_tool("search_policy", {"query": query})
+        assert not result.isError
+        assert result.structuredContent is None
+        assert json.loads(result.content[0].text) == search_policy(query)
+    for query in ("", " \t\n", "x" * 501):
+        result = await session.call_tool("search_policy", {"query": query})
+        assert result.isError
+        assert "query must contain between 1 and 500 characters" in result.content[0].text
+
+
+@pytest.mark.asyncio
+async def test_mcp_policy_contract(mcp_url):
+    async with httpx.AsyncClient(headers={"Authorization": "Bearer test-token-not-a-secret"}) as client:
+        async with streamable_http_client(mcp_url, http_client=client) as (read, write, _):
+            async with ClientSession(read, write) as session:
+                await assert_policy_contract(session)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("language", ["python", "dotnet"])
+async def test_mcp_stdio_contract(language):
+    command = "dotnet" if language == "dotnet" else sys.executable
+    script = ROOT / ("dotnet/mcp_server/bin/Debug/net10.0/PolicyMcpServer.dll" if language == "dotnet"
+                     else "python/mcp_server/server.py")
+    parameters = StdioServerParameters(command=command, args=[str(script), "--stdio"], env=os.environ | {
+        "MCP_PUBLIC_HOST": "", "MCP_AUTH_TOKEN": "", "DOTNET_ENVIRONMENT": "Production",
+        "PYTHON_DOTENV_DISABLED": "1",
+    })
+    async with stdio_client(parameters) as (read, write):
+        async with ClientSession(read, write) as session:
+            await assert_policy_contract(session)
 
 
 def test_policy_and_binding_validation(monkeypatch):

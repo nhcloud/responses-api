@@ -5,7 +5,14 @@
       "label": "build-loop-demo",
       "type": "process",
       "command": "dotnet",
-      "args": ["build", "${workspaceFolder}/dotnet/LoopDemo"],
+      "args": ["build", "${workspaceFolder}/dotnet/loop"],
+      "problemMatcher": "$msCompile"
+    },
+    {
+      "label": "build-mcp-server",
+      "type": "process",
+      "command": "dotnet",
+      "args": ["build", "${workspaceFolder}/dotnet/mcp_server"],
       "problemMatcher": "$msCompile"
     }
   ]

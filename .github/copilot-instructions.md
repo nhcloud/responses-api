@@ -7,4 +7,6 @@ These samples accompany docs/WhoRunsTheLoop.pdf. Keep Chat Completions, Response
 - MCP uses the official Python SDK's supported 1.x line for compatibility with Agent Framework.
 - SDK references: https://github.com/microsoft/agent-framework and https://py.sdk.modelcontextprotocol.io/v1/ and https://github.com/modelcontextprotocol/csharp-sdk.
 - Never log authorization headers, API keys, or raw model request bodies. The policy catalog is intentionally fictional and read-only.
-- Validate with `dotnet build dotnet/LoopDemo` followed by `python -m pytest tests -q` in the configured virtual environment.
+- Keep each language self-contained: `dotnet/loop`, `dotnet/mcp_server`, `python/loop`, and `python/mcp_server`. Both MCP servers must expose equivalent policy tools and security behavior.
+- Python dependencies and dotenv configuration live under `python/`; shared integration tests remain at the root.
+- Validate with `dotnet build dotnet/loop` and `dotnet build dotnet/mcp_server`, followed by `python -m pytest tests -q` in the configured virtual environment.

@@ -5,27 +5,37 @@
       "name": "Python: policy MCP HTTP server",
       "type": "debugpy",
       "request": "launch",
-      "program": "${workspaceFolder}/mcp_server/server.py",
-      "cwd": "${workspaceFolder}",
+      "program": "${workspaceFolder}/python/mcp_server/server.py",
+      "cwd": "${workspaceFolder}/python",
       "console": "integratedTerminal",
-      "envFile": "${workspaceFolder}/.env"
+      "envFile": "${workspaceFolder}/python/.env"
     },
     {
       "name": "Python: API comparison",
       "type": "debugpy",
       "request": "launch",
-      "program": "${workspaceFolder}/python/loop_demo.py",
-      "cwd": "${workspaceFolder}",
+      "program": "${workspaceFolder}/python/loop/loop_demo.py",
+      "cwd": "${workspaceFolder}/python",
       "console": "integratedTerminal",
-      "envFile": "${workspaceFolder}/.env"
+      "envFile": "${workspaceFolder}/python/.env"
     },
     {
       "name": ".NET: API comparison",
       "type": "coreclr",
       "request": "launch",
       "preLaunchTask": "build-loop-demo",
-      "program": "${workspaceFolder}/dotnet/LoopDemo/bin/Debug/net10.0/LoopDemo.dll",
-      "cwd": "${workspaceFolder}",
+      "program": "${workspaceFolder}/dotnet/loop/bin/Debug/net10.0/LoopDemo.dll",
+      "cwd": "${workspaceFolder}/dotnet/loop",
+      "console": "integratedTerminal",
+      "env": { "DOTNET_ENVIRONMENT": "Development" }
+    },
+    {
+      "name": ".NET: policy MCP HTTP server",
+      "type": "coreclr",
+      "request": "launch",
+      "preLaunchTask": "build-mcp-server",
+      "program": "${workspaceFolder}/dotnet/mcp_server/bin/Debug/net10.0/PolicyMcpServer.dll",
+      "cwd": "${workspaceFolder}/dotnet/mcp_server",
       "console": "integratedTerminal",
       "env": { "DOTNET_ENVIRONMENT": "Development" }
     }

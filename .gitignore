@@ -7,4 +7,4 @@ __pycache__/
 .env
 .env.*
 !.env.example
-/dotnet/LoopDemo/appsettings.development.json
+/dotnet/*/appsettings.development.json

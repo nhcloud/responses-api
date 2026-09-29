@@ -1,0 +1,6 @@
+*
+!PolicyMcpServer.csproj
+!Program.cs
+!PolicyTools.cs
+!appsettings.json
+!Dockerfile
