@@ -8,12 +8,19 @@ One fictional travel-policy KB, equivalent MCP servers in .NET and Python, and t
 | Menu | Model endpoint | Who calls MCP? | Conversation state |
 | --- | --- | --- | --- |
 | **1 - Chat Completions** | Chat Completions | Agent Framework in your application | Local history replay |
-| **2 - Responses** | Responses with provider-hosted MCP | Azure OpenAI | Service-managed response chaining |
-| **3 - Exit** | None | Neither | Ends the application |
+| **2 - Responses (confirm)** | Responses with provider-hosted MCP | Azure OpenAI, after you approve each call | Service-managed response chaining |
+| **3 - Responses (auto-approve)** | Responses with provider-hosted MCP | Azure OpenAI, without asking | Service-managed response chaining |
+| **4 - Exit** | None | Neither | Ends the application |
 
-Both demos use the same `MCP_SERVER_URL` and `search_policy` tool. **The MCP server is publicly hosted in both; only option 2 uses the provider-hosted MCP integration.** Option 1 receives function calls and executes them through Agent Framework in our application. Option 2 sends an MCP server declaration, allow-list, and authentication header to Azure OpenAI; our application does not connect to MCP at all. Approval requests may still return to our application, but approving a call does not execute the tool locally.
+Both demos use the same `MCP_SERVER_URL` and `search_policy` tool. **The MCP server is publicly hosted in both; only options 2 and 3 use the provider-hosted MCP integration.** Option 1 receives function calls and executes them through Agent Framework in our application. Options 2 and 3 send an MCP server declaration, allow-list, and authentication header to Azure OpenAI; our application does not connect to MCP at all. Approval requests may still return to our application, but approving a call does not execute the tool locally.
 
 Responses also supports client-side tools: merely changing API endpoints does not move tool execution to the provider. The menu deliberately selects provider-hosted MCP for Responses to make this comparison explicit.
+
+### Hosted MCP approval
+
+With hosted MCP, the tool declaration sent to Azure OpenAI carries `require_approval`. Option 2 sends `always`: before each call, the service stops and returns an `mcp_approval_request` with the proposed arguments. The demo asks `Allow search_policy ...? [y/N]` and sends the answer back in a **second Responses request**. That extra round trip and your typing time are why option 2 takes longer, and both count in `[timing]`. Option 3 sends `never`: Azure OpenAI calls the MCP server and finishes the turn in a single request. The startup line shows `MCP approval: prompt (always_require)` or `MCP approval: auto (never_require)`.
+
+To skip confirmation, choose menu option 3, or pass `--auto-approve` to the one-shot `hosted-mcp` mode. In code, this is `HostedMcpServerToolApprovalMode.NeverRequire` in .NET and `approval_mode="never_require"` in Python. Skip approval only for tools you trust with whatever the model sends them. Here `search_policy` is read-only and allow-listed. For tools that change data or receive sensitive input, keep `always`, or require approval only for specific tools (`HostedMcpServerToolApprovalMode.RequireSpecific` / `{"always_require_approval": [...]}`).
 
 The server exposes only `search_policy`. Its data is explicitly fictional, deterministic, and read-only. It has no model credentials, filesystem tools, or external data access.
 
@@ -47,7 +54,6 @@ dotnet/
 python/
 	loop/
 	mcp_server/
-	.env.example
 	requirements.txt
 	requirements-dev.txt
 ```
@@ -69,7 +75,7 @@ dotnet build dotnet/loop
 dotnet build dotnet/mcp_server
 ```
 
-Configure the endpoint and deployment in [dotnet/loop/appsettings.json](dotnet/loop/appsettings.json), and server settings in [dotnet/mcp_server/appsettings.json](dotnet/mcp_server/appsettings.json). Each project loads its own JSON file from the build output. With `DOTNET_ENVIRONMENT=Development`, each also loads its optional `appsettings.development.json` and its own user-secrets store. Environment variables take precedence. Development settings are ignored by Git. .NET does not load Python's dotenv file.
+Configure the endpoint and deployment in [dotnet/loop/appsettings.json](dotnet/loop/appsettings.json), and server settings in [dotnet/mcp_server/appsettings.json](dotnet/mcp_server/appsettings.json). Each project loads its own JSON file from the build output. With `DOTNET_ENVIRONMENT=Development`, each also loads its optional `appsettings.development.json` and its own user-secrets store. Environment variables take precedence. Development settings are ignored by Git. .NET does not load Python's dotenv files.
 
 Keep secrets out of tracked JSON files. For local development, set the key with `dotnet user-secrets set AZURE_OPENAI_API_KEY "<your-key>" --project dotnet/loop`, then select Development:
 
@@ -96,10 +102,10 @@ Install Python 3.11 or newer, then:
 ```powershell
 python -m venv python/.venv
 .\python\.venv\Scripts\python.exe -m pip install -r python/requirements.txt
-Copy-Item python/.env.example python/.env
+Copy-Item python/loop/.env.example python/loop/.env
 ```
 
-Fill in the Azure endpoint, deployment name, and API key in the new dotenv file, using [python/.env.example](python/.env.example) as the template. Both the Python loop and server automatically load `python/.env`, regardless of the working directory, without overriding existing environment variables. The file is ignored by Git; do not commit credentials.
+Fill in the Azure endpoint, deployment name, and API key in `python/loop/.env`. Like .NET, each program has its own settings with the same keys: the loop loads [python/loop/.env](python/loop/.env.example) (Azure OpenAI and `MCP_SERVER_URL`/`MCP_AUTH_TOKEN`), and the server loads an optional `python/mcp_server/.env` (`MCP_HOST`, `PORT`, `MCP_PUBLIC_HOST`, `MCP_AUTH_TOKEN`; see [the template](python/mcp_server/.env.example)). The server's defaults work for a local demo, so you only need that file to set a token or change the port. Both load their file regardless of the working directory, without overriding existing environment variables. `.env` files are ignored by Git; do not commit credentials.
 
 Start the server in one terminal and the loop in another:
 
@@ -113,13 +119,13 @@ Start the server in one terminal and the loop in another:
 
 On macOS/Linux, replace `.\python\.venv\Scripts\python.exe` with `python/.venv/bin/python` and use `cp` to copy the template. You can also work entirely inside the Python folder using relative paths such as `loop/loop_demo.py` and `mcp_server/server.py`.
 
-An existing repository-root `.venv` can still be used with the new script and requirements paths; it has not been moved. If upgrading an older checkout, move your existing root dotenv file to `python/.env` without overwriting an existing file there.
+An existing repository-root `.venv` can still be used with the new script and requirements paths; it has not been moved. If upgrading an older checkout, move the client settings from `python/.env` to `python/loop/.env`, and any server settings to `python/mcp_server/.env`.
 
 ### Choose An MCP Server
 
 Run **one** server, in either language. Both default to `http://localhost:8000/mcp`, with health at `http://localhost:8000/healthz`. To run both simultaneously, give one a different `PORT` and point the client at that port. Default binding is loopback; unauthenticated access is allowed only for the local demo. Set the same `MCP_AUTH_TOKEN` in server and client configuration to enable local authentication.
 
-For the complete comparison, use the [public hosting instructions](#public-mcp-hosting), then set `MCP_SERVER_URL` to that server's public HTTPS `/mcp` URL in the loop configuration. Neither menu selection changes the URL. Menu option 2 rejects localhost and returns to the menu: Azure OpenAI must be able to reach the server.
+For the complete comparison, use the [public hosting instructions](#public-mcp-hosting), then set `MCP_SERVER_URL` to that server's public HTTPS `/mcp` URL in the loop configuration. Neither menu selection changes the URL. Menu options 2 and 3 reject localhost and returns to the menu: Azure OpenAI must be able to reach the server.
 
 ### Terminal Launchers
 
@@ -141,7 +147,7 @@ Only the selected language's runtime is required. The scripts prefer `python/.ve
 
 Launchers start the loop clients only, not an MCP server. Select `3` to end each demo; on Windows, close the remaining command window or type `exit`. On macOS/Linux, press Enter after the demo ends.
 
-Choose `1` or `2` to run the two-question demo with streaming enabled. After it completes or encounters a handled error, the menu appears again. Choose `3` to exit. Each selection starts a fresh session; the two questions within that selection share context. Invalid selections are retried; end-of-input exits.
+Choose `1`, `2`, or `3` to run the two-question demo with streaming enabled. After it completes or encounters a handled error, the menu appears again. Choose `4` to exit. Each selection starts a fresh session; the two questions within that selection share context. Invalid selections are retried; end-of-input exits.
 
 Use an Azure OpenAI deployment that supports the selected API and tools. `AZURE_OPENAI_DEPLOYMENT_NAME` is your **deployment name**, which may differ from its underlying model ID. Both samples require Azure configuration and do not fall back to OpenAI.com or the old `OPENAI_*` settings.
 
@@ -149,9 +155,9 @@ Use an Azure OpenAI deployment that supports the selected API and tools. `AZURE_
 
 The clients intentionally still use the `OpenAIClient` / `AsyncOpenAI` SDKs: Azure OpenAI v1 supports these clients for both Chat Completions and Responses. All agent execution remains in Microsoft Agent Framework. This is direct Azure OpenAI model inference, not the Foundry Agent Service. Authentication remains API-key based for the demo; managed identity is not implemented. For production, prefer Microsoft Entra ID. Model, region, and resource support for Responses, stored state, and hosted MCP must be verified for your deployment.
 
-Each demo asks about hotel/meal limits and then asks about exceptions using the same session. Menu runs stream text and underlying provider event types, with explicit approval for provider-hosted MCP. Turns have a two-minute timeout and support Ctrl+C cancellation.
+Each demo asks about hotel/meal limits and then asks about exceptions using the same session. Menu runs stream text and underlying provider event types, with explicit approval for provider-hosted MCP in option 2 and none in option 3. Turns have a two-minute timeout and support Ctrl+C cancellation.
 
-Python loads `python/.env`; .NET loads its project JSON files and, in Development, user secrets. Both retain environment-variable overrides. Never commit credentials.
+Python loads `python/loop/.env` and `python/mcp_server/.env`; .NET loads its project JSON files and, in Development, user secrets. Both retain environment-variable overrides. Never commit credentials.
 
 ### Optional Command-Line Modes
 
@@ -160,10 +166,10 @@ The existing one-shot modes remain available for automation and deeper compariso
 | CLI mode | Behavior |
 | --- | --- |
 | `chat` | Chat Completions with application-side MCP, like menu option 1 |
-| `hosted-mcp` | Responses with provider-hosted MCP, like menu option 2 |
-| `responses` | Additional Responses comparison with application-side MCP; not menu option 2 |
+| `hosted-mcp` | Responses with provider-hosted MCP, like menu option 2 (add `--auto-approve` for option 3) |
+| `responses` | Additional Responses comparison with application-side MCP; not menu option 2 or 3 |
 
-For example, `dotnet run --project dotnet/loop -- hosted-mcp --stream` or, with the Python virtual environment activated, `python python/loop/loop_demo.py hosted-mcp --stream`. One-shot modes accept `--stream`, `--interactive` (free-form chat, `/exit` quits), and `--auto-approve` (provider-hosted read-only tool only). Menu runs always stream the two fixed prompts and require hosted-tool approval.
+For example, `dotnet run --project dotnet/loop -- hosted-mcp --stream` or, with the Python virtual environment activated, `python python/loop/loop_demo.py hosted-mcp --stream`. One-shot modes accept `--stream`, `--interactive` (free-form chat, `/exit` quits), `--long` (8 scripted turns; see [Is Responses faster?](#is-responses-faster)), and `--auto-approve` (provider-hosted read-only tool only). Menu runs always stream the two fixed prompts; option 2 requires hosted-tool approval and option 3 does not.
 
 ## Public MCP Hosting
 
@@ -179,7 +185,7 @@ az account set --subscription "<subscription>"   # if you have more than one
 ./deploy/deploy-mcp.ps1                           # defaults: rg-who-runs-the-loop, eastus2
 ```
 
-The script creates the resource group, a Basic registry (pulled by each app's managed identity), the environment with Log Analytics, and the apps `policy-mcp-dotnet` and `policy-mcp-python`. It sets `MCP_PUBLIC_HOST` to each app's FQDN and stores one generated `MCP_AUTH_TOKEN` as a secret shared by both apps, so a client switches servers by changing only `MCP_SERVER_URL`. It then checks `/healthz` and an authenticated MCP `initialize` on each. Re-running rebuilds the images and keeps the existing token. Add `-WriteLocalConfig` to write each URL and the token into the git-ignored client configs (.NET server → `dotnet/loop/appsettings.development.json`, Python server → `python/.env`). Apps scale to zero by default; pass `-MinReplicas 1` to avoid cold starts during a live demo. Remove everything with `az group delete -n rg-who-runs-the-loop`.
+The script creates the resource group, a Basic registry (pulled by each app's managed identity), the environment with Log Analytics, and the apps `policy-mcp-dotnet` and `policy-mcp-python`. It sets `MCP_PUBLIC_HOST` to each app's FQDN and stores one generated `MCP_AUTH_TOKEN` as a secret shared by both apps, so a client switches servers by changing only `MCP_SERVER_URL`. It then checks `/healthz` and an authenticated MCP `initialize` on each. Re-running rebuilds the images and keeps the existing token. Add `-WriteLocalConfig` to write each URL and the token into the git-ignored client configs (.NET server → `dotnet/loop/appsettings.development.json`, Python server → `python/loop/.env`). Apps scale to zero by default; pass `-MinReplicas 1` to avoid cold starts during a live demo. Remove everything with `az group delete -n rg-who-runs-the-loop`.
 
 ### Other hosts
 
@@ -227,7 +233,27 @@ Azure OpenAI receives the MCP credential and tool data in hosted mode. Send only
 
 Every question in Chat Completions and both Responses modes prints `[timing start]` before execution, then a `[timing]` summary with `start_utc`, `end_utc`, and `elapsed_seconds` (to three decimal places). This works for menu, streaming, and one-shot runs, including failed or cancelled turns. Elapsed time uses a monotonic clock. Timing covers the full agent turn, including model requests, tool calls, output, and any human approval wait; it excludes client setup, initial MCP discovery, and time spent entering the question. For audience comparisons, use the same prompts/model and account for approval wait: these measurements do not imply that either API is always faster. The optional `--auto-approve` mode removes human approval wait for this read-only demo.
 
-The clients log HTTP methods and paths, not headers or request bodies. At the end of each turn they show model HTTP request counts and **application-side** MCP HTTP request counts. In Chat, expect a model tool request, a real MCP call, and another model request. In Responses with provider-hosted MCP, expect zero application-to-MCP requests even when approval requires additional model requests; the MCP server log shows the provider's tool execution instead.
+The clients log HTTP methods and paths, not headers or request bodies. At the end of each turn they show model HTTP request counts, the total size of the request bodies sent to the model (`model request bytes`), and **application-side** MCP HTTP request counts. When a run ends, a `[summary]` table lists every turn and the totals. In a terminal, `[app -> MCP]` lines are yellow, `[timing]` elapsed-time lines are green, and `[turn]` lines are cyan. Redirected output stays plain, and setting `NO_COLOR` turns colors off. In Chat, expect a model tool request, a real MCP call, and another model request. In Responses with provider-hosted MCP, expect zero application-to-MCP requests even when approval requires additional model requests; the MCP server log shows the provider's tool execution instead.
+
+### Is Responses faster?
+
+Not necessarily, and the demo should not claim it is. In a warm two-turn run on the same model, Chat Completions was often slightly faster. Your application opens its MCP connection before timing starts, while hosted MCP connects from Azure OpenAI during the turn, and with a tiny local tool each saved round trip is worth very little. Responses wins on other things: who runs the loop, request size, and model capability. Use `--long` (8 scripted turns, ending with a question that depends on the whole conversation) to show request size growing:
+
+```powershell
+dotnet run --project dotnet/loop -- chat --stream --long
+dotnet run --project dotnet/loop -- hosted-mcp --stream --auto-approve --long
+```
+
+A sample run with `gpt-5.6-terra` and the Container Apps MCP server:
+
+| | Chat Completions | Responses with hosted MCP |
+| --- | --- | --- |
+| Model request bytes, turn 1 → turn 8 | 3,097 → 27,969 (grows every turn) | 739 → 814 (flat) |
+| Total model request bytes | 129,695 | 6,453 |
+| Model requests / app MCP requests | 16 / 8 | 8 / 0 |
+| Total elapsed | 26.0 s | 27.8 s |
+
+Chat re-sends the entire conversation, including tool results, on every request. Responses sends only the new input plus `previous_response_id`. Fewer bytes sent does not mean fewer billed tokens: the service still processes the stored context, though cached input is typically cheaper. Some models restrict Chat Completions: for example, `gpt-6-astra` rejects function tools on `/chat/completions` but supports them on `/responses`.
 
 Counts are observations, not fixed performance guarantees: tool choices, retries, and approvals change them. Streaming prints framework-forwarded provider events; Agent Framework does not necessarily forward every wire-level lifecycle event. Approval prompts deliberately display model-proposed query arguments, so do not record console output containing sensitive user data.
 
@@ -246,7 +272,7 @@ Use the existing root virtual environment instead if that is your configured int
 
 Tests run both actual Agent Framework clients against a scripted local Azure OpenAI v1 endpoint and **both real MCP servers**. They cover repeated menu selections, fresh sessions, exit/EOF, invalid selections, recovery from configuration errors, file configuration and environment overrides, Azure endpoint normalization, deployment-name routing, all three underlying modes, two-turn context, streaming, approve/deny, allow-lists, token propagation, and real tool results. Shared HTTP and stdio contract tests verify the servers' policy results, query validation, discovery metadata, authentication, and Host/Origin protection. They do not incur model charges.
 
-For VS Code, select your Python virtual environment and configure `python/.env`. Configure each project's JSON files and user secrets for .NET; both .NET F5 profiles set `DOTNET_ENVIRONMENT=Development` and do not read dotenv files. Press F5 for either MCP server or either loop sample. Install the Python/Python Debugger or C# extension for your chosen language. [.vscode/mcp.json](.vscode/mcp.json) exposes both server alternatives via stdio for local inspection; enable only the one you want and build the .NET server first. Stdio does not replace the HTTP endpoint needed by the samples or provider. You can also launch either server directly with `--stdio`.
+For VS Code, select your Python virtual environment and configure `python/loop/.env` (and optionally `python/mcp_server/.env`). Configure each project's JSON files and user secrets for .NET; both .NET F5 profiles set `DOTNET_ENVIRONMENT=Development` and do not read dotenv files. Press F5 for either MCP server or either loop sample. Install the Python/Python Debugger or C# extension for your chosen language. [.vscode/mcp.json](.vscode/mcp.json) exposes both server alternatives via stdio for local inspection; enable only the one you want and build the .NET server first. Stdio does not replace the HTTP endpoint needed by the samples or provider. You can also launch either server directly with `--stdio`.
 
 Live provider execution requires your credentials, a supported model, and the public URL you host. Offline tests prove the client contracts and local tool execution, not public reachability or provider-side tool execution. Build and exercise your chosen Docker image in the hosting environment as well.
 

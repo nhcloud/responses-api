@@ -24,7 +24,7 @@ param(
     [string]$PythonAppName = "policy-mcp-python",
     [ValidateRange(0, 10)][int]$MinReplicas = 0,
     # Writes MCP_SERVER_URL/MCP_AUTH_TOKEN to the git-ignored client configs:
-    # dotnet/loop/appsettings.development.json (.NET server) and python/.env (Python server).
+    # dotnet/loop/appsettings.development.json (.NET server) and python/loop/.env (Python server).
     [switch]$WriteLocalConfig
 )
 
@@ -143,10 +143,10 @@ if ($WriteLocalConfig) {
     $settings["MCP_AUTH_TOKEN"] = $token
     $settings | ConvertTo-Json | Set-Content $dotnetSettings -Encoding utf8
 
-    $pythonEnv = Join-Path $root "python/.env"
+    $pythonEnv = Join-Path $root "python/loop/.env"
     $lines = if (Test-Path $pythonEnv) { @(Get-Content $pythonEnv | Where-Object { $_ -notmatch "^(MCP_SERVER_URL|MCP_AUTH_TOKEN)=" }) } else { @() }
     $lines + "MCP_SERVER_URL=$($urls[$PythonAppName])" + "MCP_AUTH_TOKEN=$token" | Set-Content $pythonEnv -Encoding utf8
-    Write-Host "`nUpdated MCP_SERVER_URL and MCP_AUTH_TOKEN in dotnet/loop/appsettings.development.json and python/.env (both git-ignored)."
+    Write-Host "`nUpdated MCP_SERVER_URL and MCP_AUTH_TOKEN in dotnet/loop/appsettings.development.json and python/loop/.env (both git-ignored)."
 }
 
 Write-Host "`n.NET MCP server:   $($urls[$DotnetAppName])"

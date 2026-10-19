@@ -24,6 +24,22 @@ DEMO_PROMPTS = (
     "Summarize the travel policy, including hotel and meal limits.",
     "What exceptions to those limits are allowed?",
 )
+LONG_PROMPTS = DEMO_PROMPTS + (
+    "How far in advance must flights be booked, and who approves business travel?",
+    "When must expenses be submitted after a trip?",
+    "Is companion travel reimbursable?",
+    "I need an accessible hotel that costs USD 260 per night. What do I need to do?",
+    "My trip was an emergency and I could not get approval first. What now?",
+    "Summarize everything we discussed as a short checklist.",
+)
+YELLOW, GREEN, CYAN = "33", "32", "36"
+
+
+def paint(text: str, color: str, stream=sys.stdout) -> str:
+    """Colors only interactive terminals; redirected output (logs, tests) stays plain. Set NO_COLOR to disable."""
+    if os.getenv("NO_COLOR") or not stream.isatty():
+        return text
+    return f"\033[{color}m{text}\033[0m"
 
 
 def validate_url(value: str, public_only: bool = False) -> str:
@@ -53,17 +69,24 @@ def azure_base_url(value: str) -> str:
 
 
 class RequestTrace:
-    def __init__(self, label: str) -> None:
+    def __init__(self, label: str, color: str | None = None) -> None:
         self.label = label
+        self.color = color
         self.count = 0
+        self.bytes = 0
 
     async def __call__(self, request: httpx.Request) -> None:
         self.count += 1
-        print(f"[{self.label}] {request.method} {request.url.path}", file=sys.stderr)
+        try:
+            self.bytes += len(request.content)
+        except httpx.RequestNotRead:
+            self.bytes += int(request.headers.get("content-length", 0))
+        line = f"[{self.label}] {request.method} {request.url.path}"
+        print(paint(line, self.color, sys.stderr) if self.color else line, file=sys.stderr)
 
 
 @contextmanager
-def turn_timing(mode: str):
+def turn_timing(mode: str, on_end=None):
     started_at = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
     started = perf_counter()
     print(f"[timing start] mode={mode}; start_utc={started_at}", flush=True)
@@ -72,8 +95,21 @@ def turn_timing(mode: str):
     finally:
         elapsed = perf_counter() - started
         ended_at = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
-        print(f"\n[timing] mode={mode}; start_utc={started_at}; end_utc={ended_at}; "
-              f"elapsed_seconds={elapsed:.3f} (includes approval wait)", flush=True)
+        print("\n" + paint(f"[timing] mode={mode}; start_utc={started_at}; end_utc={ended_at}; "
+                           f"elapsed_seconds={elapsed:.3f} (includes approval wait)", GREEN), flush=True)
+        if on_end:
+            on_end(elapsed)
+
+
+def print_summary(mode: str, stats: list[tuple[int, float, int, int, int]]) -> None:
+    if not stats:
+        return
+    print("\n" + paint(f"[summary] mode={mode}", CYAN))
+    print(f"{'turn':>5}  {'elapsed_s':>9}  {'model_requests':>14}  {'model_request_bytes':>19}  {'app_mcp_requests':>16}")
+    for turn, seconds, requests, size, mcp in stats:
+        print(f"{turn:>5}  {seconds:>9.3f}  {requests:>14}  {size:>19,}  {mcp:>16}")
+    print(paint(f"{'total':>5}  {sum(row[1] for row in stats):>9.3f}  {sum(row[2] for row in stats):>14}  "
+                f"{sum(row[3] for row in stats):>19,}  {sum(row[4] for row in stats):>16}", GREEN))
 
 
 async def run_turn(agent: Agent, session, prompt: str, stream: bool) -> None:
@@ -109,7 +145,7 @@ async def run_turn(agent: Agent, session, prompt: str, stream: bool) -> None:
 
 
 async def main(args: argparse.Namespace) -> None:
-    load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
+    load_dotenv(Path(__file__).resolve().parent / ".env", override=False)
     hosted = args.mode == "hosted-mcp"
     api_key = required("AZURE_OPENAI_API_KEY")
     deployment_name = required("AZURE_OPENAI_DEPLOYMENT_NAME")
@@ -118,7 +154,7 @@ async def main(args: argparse.Namespace) -> None:
     token = os.getenv("MCP_AUTH_TOKEN", "")
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     model_trace = RequestTrace("model")
-    mcp_trace = RequestTrace("app -> MCP")
+    mcp_trace = RequestTrace("app -> MCP", YELLOW)
 
     async with AsyncExitStack() as stack:
         model_http = await stack.enter_async_context(httpx.AsyncClient(
@@ -144,48 +180,57 @@ async def main(args: argparse.Namespace) -> None:
             tools = [tool]
         agent = Agent(client=client, instructions=INSTRUCTIONS, tools=tools)
         session = agent.create_session()
+        approval = f" MCP approval: {'auto (never_require)' if args.auto_approve else 'prompt (always_require)'}." if hosted else ""
         print(f"Provider: Azure OpenAI. Mode: {args.mode}. MCP client: {'provider runtime' if hosted else 'this application'}. "
-              f"State: {'local history replay' if args.mode == 'chat' else 'service-managed'}. Ctrl+C cancels.")
+              f"State: {'local history replay' if args.mode == 'chat' else 'service-managed'}.{approval} Ctrl+C cancels.")
+        prompts = LONG_PROMPTS if args.long else DEMO_PROMPTS
+        stats: list[tuple[int, float, int, int, int]] = []
         turn = 0
         while True:
             if args.interactive:
                 prompt = await asyncio.to_thread(input, "\nYou (/exit to quit): ")
                 if prompt == "/exit":
-                    return
+                    break
                 if not prompt.strip():
                     continue
             else:
-                if turn == len(DEMO_PROMPTS):
-                    return
-                prompt = DEMO_PROMPTS[turn]
+                if turn == len(prompts):
+                    break
+                prompt = prompts[turn]
                 turn += 1
                 print(f"\nYou: {prompt}")
-            with turn_timing(args.mode):
-                model_before, mcp_before = model_trace.count, mcp_trace.count
+            model_before, bytes_before, mcp_before = model_trace.count, model_trace.bytes, mcp_trace.count
+            with turn_timing(args.mode, lambda seconds: stats.append((
+                len(stats) + 1, seconds, model_trace.count - model_before,
+                model_trace.bytes - bytes_before, mcp_trace.count - mcp_before,
+            ))):
                 async with asyncio.timeout(120):
                     await run_turn(agent, session, prompt, args.stream)
-                print(f"[turn] model HTTP requests={model_trace.count - model_before}; "
-                      f"app MCP HTTP requests={mcp_trace.count - mcp_before}")
+                print(paint(f"[turn] model HTTP requests={model_trace.count - model_before}; "
+                            f"model request bytes={model_trace.bytes - bytes_before}; "
+                            f"app MCP HTTP requests={mcp_trace.count - mcp_before}", CYAN))
+        print_summary(args.mode, stats)
 
 
 async def run_menu() -> None:
     while True:
         print("\n1 - Chat Completions (our application calls MCP)")
-        print("2 - Responses (Azure OpenAI calls MCP)")
-        print("3 - Exit")
+        print("2 - Responses (Azure OpenAI calls MCP; you confirm each call)")
+        print("3 - Responses (Azure OpenAI calls MCP; auto-approved)")
+        print("4 - Exit")
         try:
             choice = (await asyncio.to_thread(input, "Select: ")).strip()
         except EOFError:
             return
-        if choice == "3":
+        if choice == "4":
             return
-        if choice not in {"1", "2"}:
-            print("Select 1, 2, or 3.")
+        if choice not in {"1", "2", "3"}:
+            print("Select 1, 2, 3, or 4.")
             continue
         try:
             await main(argparse.Namespace(
                 mode="chat" if choice == "1" else "hosted-mcp",
-                stream=True, auto_approve=False, interactive=False,
+                stream=True, auto_approve=choice == "3", interactive=False, long=False,
             ))
         except EOFError:
             return
@@ -199,16 +244,19 @@ async def run_menu() -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Who Runs the Loop? Microsoft Agent Framework demo")
     parser.add_argument("mode", nargs="?", choices=["chat", "responses", "hosted-mcp"],
-                        help="Omit for the Chat / Responses / Exit menu")
+                        help="Omit for the Chat / Responses / Responses (auto-approve) / Exit menu")
     parser.add_argument("--stream", action="store_true")
     parser.add_argument("--auto-approve", action="store_true", help="Allow the hosted read-only search tool without prompting")
     parser.add_argument("--interactive", action="store_true", help="Chat instead of running the two-turn demo")
+    parser.add_argument("--long", action="store_true", help="Run an 8-turn scripted conversation to show request growth")
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     try:
         args = parse_args()
+        if os.name == "nt" and sys.stdout.isatty():
+            os.system("")  # Enables ANSI color handling in legacy Windows consoles.
         asyncio.run(run_menu() if args.mode is None else main(args))
     except (KeyboardInterrupt, EOFError):
         print("\nStopped.", file=sys.stderr)

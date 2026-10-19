@@ -91,7 +91,7 @@ def create_app() -> ASGIApp:
 
 
 def main() -> None:
-    load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
+    load_dotenv(Path(__file__).resolve().parent / ".env", override=False)
     parser = argparse.ArgumentParser(description="Read-only fictional travel-policy MCP server")
     parser.add_argument("--stdio", action="store_true", help="Use local stdio instead of HTTP")
     args = parser.parse_args()

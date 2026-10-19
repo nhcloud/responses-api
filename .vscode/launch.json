@@ -7,8 +7,7 @@
       "request": "launch",
       "program": "${workspaceFolder}/python/mcp_server/server.py",
       "cwd": "${workspaceFolder}/python",
-      "console": "integratedTerminal",
-      "envFile": "${workspaceFolder}/python/.env"
+      "console": "integratedTerminal"
     },
     {
       "name": "Python: API comparison",
@@ -16,8 +15,7 @@
       "request": "launch",
       "program": "${workspaceFolder}/python/loop/loop_demo.py",
       "cwd": "${workspaceFolder}/python",
-      "console": "integratedTerminal",
-      "envFile": "${workspaceFolder}/python/.env"
+      "console": "integratedTerminal"
     },
     {
       "name": ".NET: API comparison",

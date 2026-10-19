@@ -3,8 +3,9 @@ using ChatMessage = Microsoft.Extensions.AI.ChatMessage;
 
 if (args.Contains("--help"))
 {
-    Console.WriteLine("Run without arguments for the Chat / Responses / Exit menu.");
-    Console.WriteLine("Usage: dotnet run --project dotnet/loop -- <chat|responses|hosted-mcp> [--stream] [--auto-approve] [--interactive]");
+    Console.WriteLine("Run without arguments for the Chat / Responses / Responses (auto-approve) / Exit menu.");
+    Console.WriteLine("Usage: dotnet run --project dotnet/loop -- <chat|responses|hosted-mcp> [--stream] [--auto-approve] [--interactive] [--long]");
+    Console.WriteLine("--long runs an 8-turn scripted conversation to show how request size grows with history replay.");
     return;
 }
 
@@ -24,7 +25,7 @@ catch (OperationCanceledException)
 }
 catch (Exception exception)
 {
-    Console.Error.WriteLine($"Run failed ({exception.GetType().Name}). Check endpoint, credentials, model support, and MCP server availability. Use the README troubleshooting steps.");
+    Console.Error.WriteLine($"Run failed ({Describe(exception)}). Check endpoint, credentials, model support, and MCP server availability. Use the README troubleshooting steps.");
     Environment.ExitCode = 1;
 }
 
@@ -33,19 +34,27 @@ static async Task RunMenuAsync(CancellationToken cancellationToken)
     while (!cancellationToken.IsCancellationRequested)
     {
         Console.WriteLine("\n1 - Chat Completions (our application calls MCP)");
-        Console.WriteLine("2 - Responses (Azure OpenAI calls MCP)");
-        Console.WriteLine("3 - Exit");
+        Console.WriteLine("2 - Responses (Azure OpenAI calls MCP; you confirm each call)");
+        Console.WriteLine("3 - Responses (Azure OpenAI calls MCP; auto-approved)");
+        Console.WriteLine("4 - Exit");
         Console.Write("Select: ");
         string? choice = Console.ReadLine()?.Trim();
-        if (choice is null or "3") return;
-        if (choice is not ("1" or "2"))
+        if (choice is null or "4") return;
+        string[]? demo = choice switch
         {
-            Console.WriteLine("Select 1, 2, or 3.");
+            "1" => ["chat", "--stream"],
+            "2" => ["hosted-mcp", "--stream"],
+            "3" => ["hosted-mcp", "--stream", "--auto-approve"],
+            _ => null,
+        };
+        if (demo is null)
+        {
+            Console.WriteLine("Select 1, 2, 3, or 4.");
             continue;
         }
         try
         {
-            await RunAsync([choice == "1" ? "chat" : "hosted-mcp", "--stream"], cancellationToken);
+            await RunAsync(demo, cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -57,7 +66,7 @@ static async Task RunMenuAsync(CancellationToken cancellationToken)
         }
         catch (Exception exception)
         {
-            Console.Error.WriteLine($"Demo failed ({exception.GetType().Name}). Check configuration, model support, and MCP availability. Responses requires a public HTTPS MCP URL. Returning to menu.");
+            Console.Error.WriteLine($"Demo failed ({Describe(exception)}). Check configuration, model support, and MCP availability. Responses requires a public HTTPS MCP URL. Returning to menu.");
         }
     }
 }
@@ -66,7 +75,7 @@ static async Task RunAsync(string[] arguments, CancellationToken cancellationTok
 {
     string mode = arguments[0];
     if (mode is not ("chat" or "responses" or "hosted-mcp") ||
-        arguments.Skip(1).Any(argument => argument is not ("--stream" or "--auto-approve" or "--interactive")))
+        arguments.Skip(1).Any(argument => argument is not ("--stream" or "--auto-approve" or "--interactive" or "--long")))
         throw new ArgumentException("Unknown mode or option. Use --help.");
     bool hosted = mode == "hosted-mcp";
     var configurationBuilder = new ConfigurationBuilder()
@@ -86,7 +95,7 @@ static async Task RunAsync(string[] arguments, CancellationToken cancellationTok
 
     using var modelTrace = new RequestTrace("model");
     using var modelHttp = new HttpClient(modelTrace);
-    using var mcpTrace = new RequestTrace("app -> MCP");
+    using var mcpTrace = new RequestTrace("app -> MCP", ConsoleColor.Yellow);
     using var mcpHttp = new HttpClient(mcpTrace);
     if (!string.IsNullOrEmpty(token))
         mcpHttp.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
@@ -131,8 +140,17 @@ static async Task RunAsync(string[] arguments, CancellationToken cancellationTok
             ? client.GetChatClient(deploymentName).AsAIAgent(instructions: instructions, tools: tools)
             : client.GetResponsesClient().AsAIAgent(model: deploymentName, instructions: instructions, tools: tools);
         AgentSession session = await agent.CreateSessionAsync(cancellationToken);
-        Console.WriteLine($"Provider: Azure OpenAI. Mode: {mode}. MCP client: {(hosted ? "provider runtime" : "this application")}. State: {(mode == "chat" ? "local history replay" : "service-managed")}. Ctrl+C cancels.");
+        Console.WriteLine($"Provider: Azure OpenAI. Mode: {mode}. MCP client: {(hosted ? "provider runtime" : "this application")}. State: {(mode == "chat" ? "local history replay" : "service-managed")}.{(hosted ? $" MCP approval: {(arguments.Contains("--auto-approve") ? "auto (never_require)" : "prompt (always_require)")}." : "")} Ctrl+C cancels.");
         string[] demoPrompts = ["Summarize the travel policy, including hotel and meal limits.", "What exceptions to those limits are allowed?"];
+        if (arguments.Contains("--long"))
+            demoPrompts = [.. demoPrompts,
+                "How far in advance must flights be booked, and who approves business travel?",
+                "When must expenses be submitted after a trip?",
+                "Is companion travel reimbursable?",
+                "I need an accessible hotel that costs USD 260 per night. What do I need to do?",
+                "My trip was an emergency and I could not get approval first. What now?",
+                "Summarize everything we discussed as a short checklist."];
+        List<TurnStats> stats = [];
         int turn = 0;
         while (!cancellationToken.IsCancellationRequested)
         {
@@ -151,9 +169,11 @@ static async Task RunAsync(string[] arguments, CancellationToken cancellationTok
                 Console.WriteLine($"\nYou: {prompt}");
             }
 
-            using var timing = new TurnTiming(mode);
             int modelBefore = modelTrace.Count;
+            long bytesBefore = modelTrace.Bytes;
             int mcpBefore = mcpTrace.Count;
+            using var timing = new TurnTiming(mode, seconds => stats.Add(new(stats.Count + 1, seconds,
+                modelTrace.Count - modelBefore, modelTrace.Bytes - bytesBefore, mcpTrace.Count - mcpBefore)));
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeout.CancelAfter(TimeSpan.FromMinutes(2));
             List<ChatMessage> messages = [new(ChatRole.User, prompt)];
@@ -191,14 +211,25 @@ static async Task RunAsync(string[] arguments, CancellationToken cancellationTok
                     return new ChatMessage(ChatRole.User, [approval.CreateResponse(approved)]);
                 }).ToList();
             }
-            Console.WriteLine($"[turn] model HTTP requests={modelTrace.Count - modelBefore}; app MCP HTTP requests={mcpTrace.Count - mcpBefore}");
+            Painter.WriteLine(Console.Out, ConsoleColor.Cyan,
+                $"[turn] model HTTP requests={modelTrace.Count - modelBefore}; model request bytes={modelTrace.Bytes - bytesBefore}; app MCP HTTP requests={mcpTrace.Count - mcpBefore}");
         }
+        PrintSummary(mode, stats);
     }
     finally
     {
         if (mcpClient is not null) await mcpClient.DisposeAsync();
     }
 }
+
+// Status codes only: response bodies may echo request data, and messages could include URLs or credentials.
+static string Describe(Exception exception) => exception switch
+{
+    HttpRequestException { StatusCode: { } status } =>
+        $"{exception.GetType().Name} from MCP, HTTP {(int)status}{(status == System.Net.HttpStatusCode.Unauthorized ? " - check MCP_AUTH_TOKEN" : "")}",
+    ClientResultException { Status: > 0 } model => $"{exception.GetType().Name} from model, HTTP {model.Status}",
+    _ => exception.GetType().Name,
+};
 
 static string Required(IConfiguration configuration, string name) => configuration[name] is { Length: > 0 } value
     ? value : throw new InvalidOperationException($"Set {name}.");
@@ -221,15 +252,55 @@ static Uri ValidateUrl(string value, bool publicOnly)
     return uri;
 }
 
+static void PrintSummary(string mode, List<TurnStats> stats)
+{
+    if (stats.Count == 0) return;
+    Painter.WriteLine(Console.Out, ConsoleColor.Cyan, $"\n[summary] mode={mode}");
+    Console.WriteLine($"{"turn",5}  {"elapsed_s",9}  {"model_requests",14}  {"model_request_bytes",19}  {"app_mcp_requests",16}");
+    foreach (var row in stats)
+        Console.WriteLine(FormattableString.Invariant(
+            $"{row.Turn,5}  {row.Seconds,9:F3}  {row.ModelRequests,14}  {row.ModelBytes,19:N0}  {row.McpRequests,16}"));
+    Painter.WriteLine(Console.Out, ConsoleColor.Green, FormattableString.Invariant(
+        $"{"total",5}  {stats.Sum(row => row.Seconds),9:F3}  {stats.Sum(row => row.ModelRequests),14}  {stats.Sum(row => row.ModelBytes),19:N0}  {stats.Sum(row => row.McpRequests),16}"));
+}
+
+record TurnStats(int Turn, double Seconds, int ModelRequests, long ModelBytes, int McpRequests);
+
+// Colors only interactive consoles; redirected output (logs, tests) stays plain. Set NO_COLOR to disable.
+static class Painter
+{
+    private static readonly bool Enabled = string.IsNullOrEmpty(Environment.GetEnvironmentVariable("NO_COLOR"));
+    private static readonly Lock Gate = new();
+
+    public static void WriteLine(TextWriter writer, ConsoleColor color, string text)
+    {
+        bool redirected = writer == Console.Error ? Console.IsErrorRedirected : Console.IsOutputRedirected;
+        if (!Enabled || redirected)
+        {
+            writer.WriteLine(text);
+            return;
+        }
+        lock (Gate)
+        {
+            Console.ForegroundColor = color;
+            writer.Write(text);
+            Console.ResetColor();
+            writer.WriteLine();
+        }
+    }
+}
+
 sealed class TurnTiming : IDisposable
 {
     private readonly string mode;
+    private readonly Action<double>? onEnd;
     private readonly DateTimeOffset startedAt = DateTimeOffset.UtcNow;
     private readonly System.Diagnostics.Stopwatch stopwatch = System.Diagnostics.Stopwatch.StartNew();
 
-    public TurnTiming(string mode)
+    public TurnTiming(string mode, Action<double>? onEnd = null)
     {
         this.mode = mode;
+        this.onEnd = onEnd;
         Console.WriteLine($"[timing start] mode={mode}; start_utc={startedAt:O}");
     }
 
@@ -237,19 +308,28 @@ sealed class TurnTiming : IDisposable
     {
         stopwatch.Stop();
         DateTimeOffset endedAt = DateTimeOffset.UtcNow;
-        Console.WriteLine(FormattableString.Invariant(
-            $"\n[timing] mode={mode}; start_utc={startedAt:O}; end_utc={endedAt:O}; elapsed_seconds={stopwatch.Elapsed.TotalSeconds:F3} (includes approval wait)"));
+        Console.WriteLine();
+        Painter.WriteLine(Console.Out, ConsoleColor.Green, FormattableString.Invariant(
+            $"[timing] mode={mode}; start_utc={startedAt:O}; end_utc={endedAt:O}; elapsed_seconds={stopwatch.Elapsed.TotalSeconds:F3} (includes approval wait)"));
+        onEnd?.Invoke(stopwatch.Elapsed.TotalSeconds);
     }
 }
 
-sealed class RequestTrace(string label) : DelegatingHandler(new HttpClientHandler { AllowAutoRedirect = false })
+sealed class RequestTrace(string label, ConsoleColor? color = null) : DelegatingHandler(new HttpClientHandler { AllowAutoRedirect = false })
 {
     public int Count { get; private set; }
+    public long Bytes { get; private set; }
 
-    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
         Count++;
-        Console.Error.WriteLine($"[{label}] {request.Method} {request.RequestUri?.AbsolutePath}");
-        return base.SendAsync(request, cancellationToken);
+        if (request.Content is not null)
+            Bytes += (await request.Content.ReadAsByteArrayAsync(cancellationToken)).LongLength;
+        string line = $"[{label}] {request.Method} {request.RequestUri?.AbsolutePath}";
+        if (color is { } value)
+            Painter.WriteLine(Console.Error, value, line);
+        else
+            Console.Error.WriteLine(line);
+        return await base.SendAsync(request, cancellationToken);
     }
 }

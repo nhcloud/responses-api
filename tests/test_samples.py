@@ -240,7 +240,7 @@ def run_sample(language, mode, mcp_url, base_url, extra=(), stdin="", expect_suc
             script_directory.mkdir(parents=True)
             shutil.copy2(ROOT / "python/loop/loop_demo.py", script_directory / "loop_demo.py")
             command = [sys.executable, str(script_directory / "loop_demo.py")]
-            (configuration_directory / "python/.env").write_text(
+            (script_directory / ".env").write_text(
                 "\n".join(f"{name}={value}" for name, value in settings.items()), encoding="utf-8",
             )
             environment["PYTHON_DOTENV_DISABLED"] = "0"
@@ -251,6 +251,7 @@ def run_sample(language, mode, mcp_url, base_url, extra=(), stdin="", expect_suc
     assert (result.returncode == 0) == expect_success, result.stdout + result.stderr
     assert "test-model-key" not in result.stdout + result.stderr
     assert "test-token-not-a-secret" not in result.stdout + result.stderr
+    assert "\x1b[" not in result.stdout + result.stderr, "Redirected output must not contain color codes"
     if expect_success:
         assert_turn_timings(result.stdout, result.stdout.count("[turn]"))
     return result
@@ -285,29 +286,33 @@ def test_timing_on_model_failure(language, stream):
 
 
 @pytest.mark.parametrize("language", ["python", "dotnet"])
-@pytest.mark.parametrize("choice", ["1", "2"])
+@pytest.mark.parametrize("choice", ["1", "2", "3"])
 def test_menu_repeats_with_fresh_sessions(language, choice, mcp_url):
-    hosted = choice == "2"
-    selections = "2\ny\ny\n2\nn\nn\n3\n" if hosted else "1\n1\n3\n"
+    hosted = choice in {"2", "3"}
+    selections = {"1": "1\n1\n4\n", "2": "2\ny\ny\n2\nn\nn\n4\n", "3": "3\n3\n4\n"}[choice]
     with model_endpoint() as (base_url, requests):
         result = run_sample(language, None, "https://mcp.example.com/mcp" if hosted else mcp_url,
                             base_url, stdin=selections)
-    assert result.stdout.count("3 - Exit") == 3
+    assert result.stdout.count("4 - Exit") == 3
     assert result.stdout.count("Provider: Azure OpenAI") == 2
-    assert len(requests) == 8
+    # Approval adds a second Responses request per turn; auto-approve does not.
+    assert len(requests) == (4 if choice == "3" else 8)
     assert all(body["stream"] for _, body in requests)
     if hosted:
+        first_requests = (0, 2) if choice == "3" else (0, 4)
+        follow_ups = (1, 3) if choice == "3" else (2, 6)
         assert all(path == "/openai/v1/responses" for path, _ in requests)
         assert all(body["tools"][0]["type"] == "mcp" for _, body in requests)
-        assert not requests[0][1].get("previous_response_id")
-        assert not requests[4][1].get("previous_response_id")
-        assert requests[2][1].get("previous_response_id")
-        assert requests[6][1].get("previous_response_id")
+        assert all(body["tools"][0]["require_approval"] == ("never" if choice == "3" else "always") for _, body in requests)
+        assert not any(requests[index][1].get("previous_response_id") for index in first_requests)
+        assert all(requests[index][1].get("previous_response_id") for index in follow_ups)
         assert "[app -> MCP]" not in result.stderr
         assert result.stdout.count("app MCP HTTP requests=0") == 4
+        assert result.stdout.count("MCP approval: auto" if choice == "3" else "MCP approval: prompt") == 2
         approvals = [item for _, body in requests for item in body.get("input", [])
                      if item.get("type") == "mcp_approval_response"]
-        assert [item["approve"] for item in approvals] == [True, True, False, False]
+        assert [item["approve"] for item in approvals] == ([] if choice == "3" else [True, True, False, False])
+        assert ("Allow search_policy" in result.stdout) == (choice == "2")
     else:
         assert all(path == "/openai/v1/chat/completions" for path, _ in requests)
         assert all(body["tools"][0]["type"] == "function" for _, body in requests)
@@ -318,21 +323,21 @@ def test_menu_repeats_with_fresh_sessions(language, choice, mcp_url):
 
 
 @pytest.mark.parametrize("language", ["python", "dotnet"])
-@pytest.mark.parametrize("selections", ["3\n", "", "invalid\n\n3\n"])
+@pytest.mark.parametrize("selections", ["4\n", "", "invalid\n\n4\n"])
 def test_menu_exit_and_invalid_selection(language, selections):
     result = run_sample(language, None, "", "", stdin=selections)
-    assert "3 - Exit" in result.stdout
+    assert "4 - Exit" in result.stdout
     assert "[model]" not in result.stderr
     assert "Demo failed" not in result.stderr
     if selections.startswith("invalid"):
-        assert result.stdout.count("Select 1, 2, or 3.") == 2
+        assert result.stdout.count("Select 1, 2, 3, or 4.") == 2
 
 
 @pytest.mark.parametrize("language", ["python", "dotnet"])
 def test_menu_recovers_from_configuration_errors(language):
-    result = run_sample(language, None, "", "", stdin="1\n2\n3\n")
-    assert result.stdout.count("3 - Exit") == 3
-    assert result.stderr.count("Demo failed") == 2
+    result = run_sample(language, None, "", "", stdin="1\n2\n3\n4\n")
+    assert result.stdout.count("4 - Exit") == 4
+    assert result.stderr.count("Demo failed") == 3
     assert "[model]" not in result.stderr
 
 
@@ -351,7 +356,8 @@ def test_file_configuration(language, development, deployment_override, tmp_path
 
 def test_mcp_server_file_configuration(tmp_path, monkeypatch):
     monkeypatch.setattr(os, "environ", os.environ.copy())
-    (tmp_path / ".env").write_text("MCP_HOST=127.0.0.1\nPORT=8123\nMCP_AUTH_TOKEN=test-env-token\n", encoding="utf-8")
+    (tmp_path / "mcp_server").mkdir()
+    (tmp_path / "mcp_server/.env").write_text("MCP_HOST=127.0.0.1\nPORT=8123\nMCP_AUTH_TOKEN=test-env-token\n", encoding="utf-8")
     monkeypatch.setattr(policy_server, "__file__", str(tmp_path / "mcp_server/server.py"))
     monkeypatch.setattr(sys, "argv", ["server.py"])
     for name in ("MCP_HOST", "MCP_AUTH_TOKEN", "MCP_PUBLIC_HOST", "PORT", "PYTHON_DOTENV_DISABLED"):
@@ -438,6 +444,32 @@ def test_two_turn_tool_loop(language, mode, stream, endpoint_suffix, mcp_url):
         assert any(item.get("type") == "function_call_output" and "TRAVEL-002" in json.dumps(item["output"]) for item in requests[1][1]["input"])
     if mode != "chat":
         assert requests[-1][1].get("previous_response_id"), "Follow-up must chain service-managed state"
+
+
+@pytest.mark.parametrize("language", ["python", "dotnet"])
+@pytest.mark.parametrize("mode", ["chat", "hosted-mcp"])
+def test_long_run_reports_request_growth(language, mode, mcp_url):
+    hosted = mode == "hosted-mcp"
+    with model_endpoint() as (base_url, requests):
+        result = run_sample(language, mode, "https://mcp.example.com/mcp" if hosted else mcp_url, base_url,
+                            ["--long"] + (["--auto-approve"] if hosted else []))
+    turn_bytes = [int(value) for value in re.findall(r"model request bytes=(\d+)", result.stdout)]
+    assert len(turn_bytes) == 8
+    assert len(requests) == (8 if hosted else 16)
+    assert f"[summary] mode={mode}" in result.stdout
+    total = re.search(r"^total\s+[\d.]+\s+(\d+)\s+([\d,]+)\s+(\d+)\s*$", result.stdout, re.MULTILINE)
+    assert total, result.stdout
+    assert int(total[1]) == len(requests)
+    assert int(total[2].replace(",", "")) == sum(turn_bytes)
+    if hosted:
+        # previous_response_id: each request carries only the new turn.
+        assert max(turn_bytes) < 2 * min(turn_bytes)
+        assert int(total[3]) == 0
+    else:
+        # History replay: every request re-sends the whole conversation.
+        assert all(later > earlier for earlier, later in zip(turn_bytes, turn_bytes[1:]))
+        assert turn_bytes[-1] > 3 * turn_bytes[0]
+        assert int(total[3]) > 0
 
 
 @pytest.mark.parametrize("language", ["python", "dotnet"])
