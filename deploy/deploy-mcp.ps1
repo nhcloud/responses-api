@@ -22,7 +22,9 @@ param(
     [string]$RegistryName = "",
     [string]$DotnetAppName = "policy-mcp-dotnet",
     [string]$PythonAppName = "policy-mcp-python",
-    [ValidateRange(0, 10)][int]$MinReplicas = 0,
+    # 1 keeps a warm replica: a cold start can exceed Azure OpenAI's hosted MCP connection timeout.
+    # Use 0 to scale to zero between demos (cheaper, but the first call may fail).
+    [ValidateRange(0, 10)][int]$MinReplicas = 1,
     # Writes MCP_SERVER_URL/MCP_AUTH_TOKEN to the git-ignored client configs:
     # dotnet/loop/appsettings.development.json (.NET server) and python/loop/.env (Python server).
     [switch]$WriteLocalConfig
