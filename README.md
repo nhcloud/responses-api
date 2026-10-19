@@ -36,6 +36,7 @@ Verified against package registries on September 28, 2026:
 | [tests/test_samples.py](tests/test_samples.py) | Offline, cross-language integration tests |
 | [dotnet/mcp_server/Dockerfile](dotnet/mcp_server/Dockerfile) | Server-only .NET container |
 | [python/mcp_server/Dockerfile](python/mcp_server/Dockerfile) | Server-only Python container |
+| [deploy/deploy-mcp.ps1](deploy/deploy-mcp.ps1) | Deploys both servers to one Azure Container Apps environment |
 
 All sample code and language-specific configuration live in two folders:
 
@@ -167,6 +168,20 @@ For example, `dotnet run --project dotnet/loop -- hosted-mcp --stream` or, with 
 ## Public MCP Hosting
 
 Hosted MCP requires an **internet-reachable HTTPS URL** with a valid certificate. `localhost`, private-only DNS, and a local stdio server cannot be reached by the provider. The URL must point to `/mcp`, not `/healthz` or an HTML login page.
+
+### Azure Container Apps (both servers)
+
+[deploy/deploy-mcp.ps1](deploy/deploy-mcp.ps1) deploys **both** servers as separate apps in one Container Apps environment, each with its own HTTPS URL. Images are built in Azure Container Registry, so local Docker is not needed. Requires PowerShell 7 and the Azure CLI:
+
+```powershell
+az login
+az account set --subscription "<subscription>"   # if you have more than one
+./deploy/deploy-mcp.ps1                           # defaults: rg-who-runs-the-loop, eastus2
+```
+
+The script creates the resource group, a Basic registry (pulled by each app's managed identity), the environment with Log Analytics, and the apps `policy-mcp-dotnet` and `policy-mcp-python`. It sets `MCP_PUBLIC_HOST` to each app's FQDN and stores one generated `MCP_AUTH_TOKEN` as a secret shared by both apps, so a client switches servers by changing only `MCP_SERVER_URL`. It then checks `/healthz` and an authenticated MCP `initialize` on each. Re-running rebuilds the images and keeps the existing token. Add `-WriteLocalConfig` to write each URL and the token into the git-ignored client configs (.NET server → `dotnet/loop/appsettings.development.json`, Python server → `python/.env`). Apps scale to zero by default; pass `-MinReplicas 1` to avoid cold starts during a live demo. Remove everything with `az group delete -n rg-who-runs-the-loop`.
+
+### Other hosts
 
 Start Docker Desktop's Linux engine (or another Linux Docker daemon), then choose **one** server-only image. Each build context contains only that language's server:
 
