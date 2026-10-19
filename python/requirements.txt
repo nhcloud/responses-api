@@ -1,5 +1,5 @@
-agent-framework-core==1.19.0
-agent-framework-openai==1.14.4
+agent-framework-core==1.22.0
+agent-framework-openai==1.17.0
 -r mcp_server/requirements.txt
 openai==3.19.2
 httpx>=0.28.1,<1

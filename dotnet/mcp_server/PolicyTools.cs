@@ -1,7 +1,5 @@
 using System.ComponentModel;
 using System.Text.Json.Serialization;
-using ModelContextProtocol;
-using ModelContextProtocol.Server;
 
 [McpServerToolType]
 public sealed class PolicyTools(ILogger<PolicyTools> logger)

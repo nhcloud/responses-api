@@ -8,11 +8,22 @@
     <NoWarn>$(NoWarn);OPENAI001</NoWarn>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="Microsoft.Agents.AI.OpenAI" Version="1.22.0" />
+    <PackageReference Include="Microsoft.Agents.AI.OpenAI" Version="1.25.0" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.0" />
     <PackageReference Include="Microsoft.Extensions.Configuration.EnvironmentVariables" Version="10.0.0" />
     <PackageReference Include="Microsoft.Extensions.Configuration.UserSecrets" Version="10.0.0" />
     <PackageReference Include="ModelContextProtocol" Version="2.2.0" />
+  </ItemGroup>
+  <ItemGroup>
+    <Using Include="System.ClientModel" />
+    <Using Include="System.ClientModel.Primitives" />
+    <Using Include="Microsoft.Agents.AI" />
+    <Using Include="Microsoft.Extensions.AI" />
+    <Using Include="Microsoft.Extensions.Configuration" />
+    <Using Include="ModelContextProtocol.Client" />
+    <Using Include="OpenAI" />
+    <Using Include="OpenAI.Chat" />
+    <Using Include="OpenAI.Responses" />
   </ItemGroup>
   <ItemGroup>
     <None Update="appsettings*.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />

@@ -8,4 +8,9 @@
   <ItemGroup>
     <PackageReference Include="ModelContextProtocol.AspNetCore" Version="2.2.0" />
   </ItemGroup>
+  <ItemGroup>
+    <Using Include="ModelContextProtocol" />
+    <Using Include="ModelContextProtocol.Protocol" />
+    <Using Include="ModelContextProtocol.Server" />
+  </ItemGroup>
 </Project>

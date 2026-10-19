@@ -1,6 +1,5 @@
 using System.Security.Cryptography;
 using System.Text;
-using ModelContextProtocol.Protocol;
 
 if (args.Contains("--help"))
 {

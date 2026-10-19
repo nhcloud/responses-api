@@ -1,13 +1,4 @@
-using System.ClientModel;
-using System.ClientModel.Primitives;
 using System.Net.Http.Headers;
-using Microsoft.Agents.AI;
-using Microsoft.Extensions.AI;
-using Microsoft.Extensions.Configuration;
-using ModelContextProtocol.Client;
-using OpenAI;
-using OpenAI.Chat;
-using OpenAI.Responses;
 using ChatMessage = Microsoft.Extensions.AI.ChatMessage;
 
 if (args.Contains("--help"))

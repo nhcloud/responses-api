@@ -21,9 +21,9 @@ The server exposes only `search_policy`. Its data is explicitly fictional, deter
 
 Verified against package registries on September 28, 2026:
 
-- .NET 10; `Microsoft.Agents.AI.OpenAI` **1.22.0**, as requested.
-- Python 3.11+; `agent-framework-core` **1.19.0**, the latest framework release checked.
-- Python `agent-framework-openai` **1.14.4**. This integration has its own version sequence and requires core 1.19.0 or newer.
+- .NET 10; `Microsoft.Agents.AI.OpenAI` **1.25.0** (latest .NET release).
+- Python 3.11+; `agent-framework-core` **1.22.0**, the latest Python release (Python and .NET packages are versioned independently; there is no Python 1.25).
+- Python `agent-framework-openai` **1.17.0**. This integration has its own version sequence and requires core 1.22.0 or newer.
 - Official MCP SDK: Python **1.30.0**, C# **2.2.0**. Python stays on the supported 1.x line because Agent Framework's MCP integration requires `<2`.
 
 | File | Purpose |
