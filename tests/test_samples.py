@@ -286,33 +286,43 @@ def test_timing_on_model_failure(language, stream):
 
 
 @pytest.mark.parametrize("language", ["python", "dotnet"])
-@pytest.mark.parametrize("choice", ["1", "2", "3"])
+@pytest.mark.parametrize("choice", ["1", "2", "3", "4"])
 def test_menu_repeats_with_fresh_sessions(language, choice, mcp_url):
-    hosted = choice in {"2", "3"}
-    selections = {"1": "1\n1\n4\n", "2": "2\ny\ny\n2\nn\nn\n4\n", "3": "3\n3\n4\n"}[choice]
+    hosted = choice in {"3", "4"}
+    selections = {"1": "1\n1\n5\n", "2": "2\n2\n5\n", "3": "3\ny\ny\n3\nn\nn\n5\n", "4": "4\n4\n5\n"}[choice]
     with model_endpoint() as (base_url, requests):
         result = run_sample(language, None, "https://mcp.example.com/mcp" if hosted else mcp_url,
                             base_url, stdin=selections)
-    assert result.stdout.count("4 - Exit") == 3
+    assert result.stdout.count("5 - Exit") == 3
     assert result.stdout.count("Provider: Azure OpenAI") == 2
     # Approval adds a second Responses request per turn; auto-approve does not.
-    assert len(requests) == (4 if choice == "3" else 8)
+    assert len(requests) == (4 if choice == "4" else 8)
     assert all(body["stream"] for _, body in requests)
     if hosted:
-        first_requests = (0, 2) if choice == "3" else (0, 4)
-        follow_ups = (1, 3) if choice == "3" else (2, 6)
+        first_requests = (0, 2) if choice == "4" else (0, 4)
+        follow_ups = (1, 3) if choice == "4" else (2, 6)
         assert all(path == "/openai/v1/responses" for path, _ in requests)
         assert all(body["tools"][0]["type"] == "mcp" for _, body in requests)
-        assert all(body["tools"][0]["require_approval"] == ("never" if choice == "3" else "always") for _, body in requests)
+        assert all(body["tools"][0]["require_approval"] == ("never" if choice == "4" else "always") for _, body in requests)
         assert not any(requests[index][1].get("previous_response_id") for index in first_requests)
         assert all(requests[index][1].get("previous_response_id") for index in follow_ups)
         assert "[app -> MCP]" not in result.stderr
         assert result.stdout.count("app MCP HTTP requests=0") == 4
-        assert result.stdout.count("MCP approval: auto" if choice == "3" else "MCP approval: prompt") == 2
+        assert result.stdout.count("MCP approval: auto" if choice == "4" else "MCP approval: prompt") == 2
         approvals = [item for _, body in requests for item in body.get("input", [])
                      if item.get("type") == "mcp_approval_response"]
-        assert [item["approve"] for item in approvals] == ([] if choice == "3" else [True, True, False, False])
-        assert ("Allow search_policy" in result.stdout) == (choice == "2")
+        assert [item["approve"] for item in approvals] == ([] if choice == "4" else [True, True, False, False])
+        assert ("Allow search_policy" in result.stdout) == (choice == "3")
+    elif choice == "2":
+        # Responses with application-side MCP: service-managed state, but our app runs the tool.
+        assert all(path == "/openai/v1/responses" for path, _ in requests)
+        assert all(body["tools"][0]["type"] == "function" for _, body in requests)
+        assert "[app -> MCP]" in result.stderr
+        assert "app MCP HTTP requests=0" not in result.stdout
+        assert not requests[0][1].get("previous_response_id")
+        assert not requests[4][1].get("previous_response_id")
+        assert requests[2][1].get("previous_response_id")
+        assert requests[6][1].get("previous_response_id")
     else:
         assert all(path == "/openai/v1/chat/completions" for path, _ in requests)
         assert all(body["tools"][0]["type"] == "function" for _, body in requests)
@@ -323,21 +333,21 @@ def test_menu_repeats_with_fresh_sessions(language, choice, mcp_url):
 
 
 @pytest.mark.parametrize("language", ["python", "dotnet"])
-@pytest.mark.parametrize("selections", ["4\n", "", "invalid\n\n4\n"])
+@pytest.mark.parametrize("selections", ["5\n", "", "invalid\n\n5\n"])
 def test_menu_exit_and_invalid_selection(language, selections):
     result = run_sample(language, None, "", "", stdin=selections)
-    assert "4 - Exit" in result.stdout
+    assert "5 - Exit" in result.stdout
     assert "[model]" not in result.stderr
     assert "Demo failed" not in result.stderr
     if selections.startswith("invalid"):
-        assert result.stdout.count("Select 1, 2, 3, or 4.") == 2
+        assert result.stdout.count("Select 1, 2, 3, 4, or 5.") == 2
 
 
 @pytest.mark.parametrize("language", ["python", "dotnet"])
 def test_menu_recovers_from_configuration_errors(language):
-    result = run_sample(language, None, "", "", stdin="1\n2\n3\n4\n")
-    assert result.stdout.count("4 - Exit") == 4
-    assert result.stderr.count("Demo failed") == 3
+    result = run_sample(language, None, "", "", stdin="1\n2\n3\n4\n5\n")
+    assert result.stdout.count("5 - Exit") == 5
+    assert result.stderr.count("Demo failed") == 4
     assert "[model]" not in result.stderr
 
 
@@ -437,17 +447,21 @@ def test_two_turn_tool_loop(language, mode, stream, endpoint_suffix, mcp_url):
             assert tool["require_approval"] == "never"
             assert tool["headers"]["Authorization"] == "Bearer test-token-not-a-secret"
         assert "app MCP HTTP requests=0" in result.stdout
-    elif mode == "chat":
+    else:
+        # App-side MCP setup (connect + list tools) is timed and counted in the first turn.
+        mcp_counts = [int(value) for value in re.findall(r"app MCP HTTP requests=(\d+)", result.stdout)]
+        assert mcp_counts[0] > mcp_counts[1] >= 1, result.stdout
+    if mode == "chat":
         assert any(message["role"] == "tool" and "TRAVEL-002" in message["content"] for message in requests[1][1]["messages"])
         assert len([message for message in requests[2][1]["messages"] if message["role"] == "user"]) == 2
-    else:
+    elif mode == "responses":
         assert any(item.get("type") == "function_call_output" and "TRAVEL-002" in json.dumps(item["output"]) for item in requests[1][1]["input"])
     if mode != "chat":
         assert requests[-1][1].get("previous_response_id"), "Follow-up must chain service-managed state"
 
 
 @pytest.mark.parametrize("language", ["python", "dotnet"])
-@pytest.mark.parametrize("mode", ["chat", "hosted-mcp"])
+@pytest.mark.parametrize("mode", ["chat", "responses", "hosted-mcp"])
 def test_long_run_reports_request_growth(language, mode, mcp_url):
     hosted = mode == "hosted-mcp"
     with model_endpoint() as (base_url, requests):
@@ -461,10 +475,10 @@ def test_long_run_reports_request_growth(language, mode, mcp_url):
     assert total, result.stdout
     assert int(total[1]) == len(requests)
     assert int(total[2].replace(",", "")) == sum(turn_bytes)
-    if hosted:
-        # previous_response_id: each request carries only the new turn.
+    if mode != "chat":
+        # previous_response_id: each request carries only the new turn, whoever runs the tool.
         assert max(turn_bytes) < 2 * min(turn_bytes)
-        assert int(total[3]) == 0
+        assert (int(total[3]) == 0) == hosted
     else:
         # History replay: every request re-sends the whole conversation.
         assert all(later > earlier for earlier, later in zip(turn_bytes, turn_bytes[1:]))

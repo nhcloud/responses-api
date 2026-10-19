@@ -92,4 +92,4 @@ fi
 if [[ "$selection" != python ]]; then
     launch ".NET demo" dotnet run --project "$root/dotnet/loop"
 fi
-echo "Opened selected demo terminals: $selection. Select 4 in each menu to exit its demo."
+echo "Opened selected demo terminals: $selection. Select 5 in each menu to exit its demo."

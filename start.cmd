@@ -45,4 +45,4 @@ if not "%selection%"=="python" (
     start ".NET demo" /D "%~dp0" "%ComSpec%" /k dotnet run --project dotnet\loop
     if errorlevel 1 exit /b 1
 )
-echo Opened selected demo terminals: %selection%. Select 4 in each menu to exit its demo.
+echo Opened selected demo terminals: %selection%. Select 5 in each menu to exit its demo.

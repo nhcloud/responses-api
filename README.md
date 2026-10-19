@@ -8,19 +8,22 @@ One fictional travel-policy KB, equivalent MCP servers in .NET and Python, and t
 | Menu | Model endpoint | Who calls MCP? | Conversation state |
 | --- | --- | --- | --- |
 | **1 - Chat Completions** | Chat Completions | Agent Framework in your application | Local history replay |
-| **2 - Responses (confirm)** | Responses with provider-hosted MCP | Azure OpenAI, after you approve each call | Service-managed response chaining |
-| **3 - Responses (auto-approve)** | Responses with provider-hosted MCP | Azure OpenAI, without asking | Service-managed response chaining |
-| **4 - Exit** | None | Neither | Ends the application |
+| **2 - Responses (app MCP)** | Responses with application-side MCP | Agent Framework in your application | Service-managed response chaining |
+| **3 - Responses (hosted, confirm)** | Responses with provider-hosted MCP | Azure OpenAI, after you approve each call | Service-managed response chaining |
+| **4 - Responses (hosted, auto-approve)** | Responses with provider-hosted MCP | Azure OpenAI, without asking | Service-managed response chaining |
+| **5 - Exit** | None | Neither | Ends the application |
 
-Both demos use the same `MCP_SERVER_URL` and `search_policy` tool. **The MCP server is publicly hosted in both; only options 2 and 3 use the provider-hosted MCP integration.** Option 1 receives function calls and executes them through Agent Framework in our application. Options 2 and 3 send an MCP server declaration, allow-list, and authentication header to Azure OpenAI; our application does not connect to MCP at all. Approval requests may still return to our application, but approving a call does not execute the tool locally.
+The menu separates two decisions. Options 1 → 2 change only the **API**: your application still runs the tool loop, but Responses holds the conversation. Options 2 → 3/4 change only **who calls MCP**.
+
+Both demos use the same `MCP_SERVER_URL` and `search_policy` tool. **The MCP server is publicly hosted in both; only options 3 and 4 use the provider-hosted MCP integration.** Options 1 and 2 receive function calls and execute them through Agent Framework in our application. Options 3 and 4 send an MCP server declaration, allow-list, and authentication header to Azure OpenAI; our application does not connect to MCP at all. Approval requests may still return to our application, but approving a call does not execute the tool locally.
 
 Responses also supports client-side tools: merely changing API endpoints does not move tool execution to the provider. The menu deliberately selects provider-hosted MCP for Responses to make this comparison explicit.
 
 ### Hosted MCP approval
 
-With hosted MCP, the tool declaration sent to Azure OpenAI carries `require_approval`. Option 2 sends `always`: before each call, the service stops and returns an `mcp_approval_request` with the proposed arguments. The demo asks `Allow search_policy ...? [y/N]` and sends the answer back in a **second Responses request**. That extra round trip and your typing time are why option 2 takes longer, and both count in `[timing]`. Option 3 sends `never`: Azure OpenAI calls the MCP server and finishes the turn in a single request. The startup line shows `MCP approval: prompt (always_require)` or `MCP approval: auto (never_require)`.
+With hosted MCP, the tool declaration sent to Azure OpenAI carries `require_approval`. Option 3 sends `always`: before each call, the service stops and returns an `mcp_approval_request` with the proposed arguments. The demo asks `Allow search_policy ...? [y/N]` and sends the answer back in a **second Responses request**. That extra round trip and your typing time are why option 3 takes longer, and both count in `[timing]`. Option 4 sends `never`: Azure OpenAI calls the MCP server and finishes the turn in a single request. The startup line shows `MCP approval: prompt (always_require)` or `MCP approval: auto (never_require)`.
 
-To skip confirmation, choose menu option 3, or pass `--auto-approve` to the one-shot `hosted-mcp` mode. In code, this is `HostedMcpServerToolApprovalMode.NeverRequire` in .NET and `approval_mode="never_require"` in Python. Skip approval only for tools you trust with whatever the model sends them. Here `search_policy` is read-only and allow-listed. For tools that change data or receive sensitive input, keep `always`, or require approval only for specific tools (`HostedMcpServerToolApprovalMode.RequireSpecific` / `{"always_require_approval": [...]}`).
+To skip confirmation, choose menu option 4, or pass `--auto-approve` to the one-shot `hosted-mcp` mode. In code, this is `HostedMcpServerToolApprovalMode.NeverRequire` in .NET and `approval_mode="never_require"` in Python. Skip approval only for tools you trust with whatever the model sends them. Here `search_policy` is read-only and allow-listed. For tools that change data or receive sensitive input, keep `always`, or require approval only for specific tools (`HostedMcpServerToolApprovalMode.RequireSpecific` / `{"always_require_approval": [...]}`).
 
 The server exposes only `search_policy`. Its data is explicitly fictional, deterministic, and read-only. It has no model credentials, filesystem tools, or external data access.
 
@@ -125,7 +128,7 @@ An existing repository-root `.venv` can still be used with the new script and re
 
 Run **one** server, in either language. Both default to `http://localhost:8000/mcp`, with health at `http://localhost:8000/healthz`. To run both simultaneously, give one a different `PORT` and point the client at that port. Default binding is loopback; unauthenticated access is allowed only for the local demo. Set the same `MCP_AUTH_TOKEN` in server and client configuration to enable local authentication.
 
-For the complete comparison, use the [public hosting instructions](#public-mcp-hosting), then set `MCP_SERVER_URL` to that server's public HTTPS `/mcp` URL in the loop configuration. Neither menu selection changes the URL. Menu options 2 and 3 reject localhost and returns to the menu: Azure OpenAI must be able to reach the server.
+For the complete comparison, use the [public hosting instructions](#public-mcp-hosting), then set `MCP_SERVER_URL` to that server's public HTTPS `/mcp` URL in the loop configuration. Neither menu selection changes the URL. Menu options 3 and 4 reject localhost and return to the menu: Azure OpenAI must be able to reach the server.
 
 ### Terminal Launchers
 
@@ -147,7 +150,7 @@ Only the selected language's runtime is required. The scripts prefer `python/.ve
 
 Launchers start the loop clients only, not an MCP server. Select `3` to end each demo; on Windows, close the remaining command window or type `exit`. On macOS/Linux, press Enter after the demo ends.
 
-Choose `1`, `2`, or `3` to run the two-question demo with streaming enabled. After it completes or encounters a handled error, the menu appears again. Choose `4` to exit. Each selection starts a fresh session; the two questions within that selection share context. Invalid selections are retried; end-of-input exits.
+Choose `1` to `4` to run the two-question demo with streaming enabled. After it completes or encounters a handled error, the menu appears again. Choose `5` to exit. Each selection starts a fresh session; the two questions within that selection share context. Invalid selections are retried; end-of-input exits.
 
 Use an Azure OpenAI deployment that supports the selected API and tools. `AZURE_OPENAI_DEPLOYMENT_NAME` is your **deployment name**, which may differ from its underlying model ID. Both samples require Azure configuration and do not fall back to OpenAI.com or the old `OPENAI_*` settings.
 
@@ -155,7 +158,7 @@ Use an Azure OpenAI deployment that supports the selected API and tools. `AZURE_
 
 The clients intentionally still use the `OpenAIClient` / `AsyncOpenAI` SDKs: Azure OpenAI v1 supports these clients for both Chat Completions and Responses. All agent execution remains in Microsoft Agent Framework. This is direct Azure OpenAI model inference, not the Foundry Agent Service. Authentication remains API-key based for the demo; managed identity is not implemented. For production, prefer Microsoft Entra ID. Model, region, and resource support for Responses, stored state, and hosted MCP must be verified for your deployment.
 
-Each demo asks about hotel/meal limits and then asks about exceptions using the same session. Menu runs stream text and underlying provider event types, with explicit approval for provider-hosted MCP in option 2 and none in option 3. Turns have a two-minute timeout and support Ctrl+C cancellation.
+Each demo asks about hotel/meal limits and then asks about exceptions using the same session. Menu runs stream text and underlying provider event types, with explicit approval for provider-hosted MCP in option 3 and none in option 4. Turns have a two-minute timeout and support Ctrl+C cancellation.
 
 Python loads `python/loop/.env` and `python/mcp_server/.env`; .NET loads its project JSON files and, in Development, user secrets. Both retain environment-variable overrides. Never commit credentials.
 
@@ -166,10 +169,10 @@ The existing one-shot modes remain available for automation and deeper compariso
 | CLI mode | Behavior |
 | --- | --- |
 | `chat` | Chat Completions with application-side MCP, like menu option 1 |
-| `hosted-mcp` | Responses with provider-hosted MCP, like menu option 2 (add `--auto-approve` for option 3) |
-| `responses` | Additional Responses comparison with application-side MCP; not menu option 2 or 3 |
+| `responses` | Responses with application-side MCP, like menu option 2 |
+| `hosted-mcp` | Responses with provider-hosted MCP, like menu option 3 (add `--auto-approve` for option 4) |
 
-For example, `dotnet run --project dotnet/loop -- hosted-mcp --stream` or, with the Python virtual environment activated, `python python/loop/loop_demo.py hosted-mcp --stream`. One-shot modes accept `--stream`, `--interactive` (free-form chat, `/exit` quits), `--long` (8 scripted turns; see [Is Responses faster?](#is-responses-faster)), and `--auto-approve` (provider-hosted read-only tool only). Menu runs always stream the two fixed prompts; option 2 requires hosted-tool approval and option 3 does not.
+For example, `dotnet run --project dotnet/loop -- hosted-mcp --stream` or, with the Python virtual environment activated, `python python/loop/loop_demo.py hosted-mcp --stream`. One-shot modes accept `--stream`, `--interactive` (free-form chat, `/exit` quits), `--long` (8 scripted turns; see [Is Responses faster?](#is-responses-faster)), and `--auto-approve` (provider-hosted read-only tool only). Menu runs always stream the two fixed prompts; option 3 requires hosted-tool approval and option 4 does not.
 
 ## Public MCP Hosting
 
@@ -231,27 +234,30 @@ Azure OpenAI receives the MCP credential and tool data in hosted mode. Send only
 
 ## What To Watch
 
-Every question in Chat Completions and both Responses modes prints `[timing start]` before execution, then a `[timing]` summary with `start_utc`, `end_utc`, and `elapsed_seconds` (to three decimal places). This works for menu, streaming, and one-shot runs, including failed or cancelled turns. Elapsed time uses a monotonic clock. Timing covers the full agent turn, including model requests, tool calls, output, and any human approval wait; it excludes client setup, initial MCP discovery, and time spent entering the question. For audience comparisons, use the same prompts/model and account for approval wait: these measurements do not imply that either API is always faster. The optional `--auto-approve` mode removes human approval wait for this read-only demo.
+Every question in Chat Completions and both Responses modes prints `[timing start]` before execution, then a `[timing]` summary with `start_utc`, `end_utc`, and `elapsed_seconds` (to three decimal places). This works for menu, streaming, and one-shot runs, including failed or cancelled turns. Elapsed time uses a monotonic clock. Timing covers the full agent turn, including model requests, tool calls, output, and any human approval wait; the first turn also includes app-side MCP setup (connecting and listing tools), because hosted MCP does the equivalent inside every turn. Timing excludes model-client construction and time spent entering the question. For audience comparisons, use the same prompts/model and account for approval wait: these measurements do not imply that either API is always faster. The optional `--auto-approve` mode removes human approval wait for this read-only demo.
 
 The clients log HTTP methods and paths, not headers or request bodies. At the end of each turn they show model HTTP request counts, the total size of the request bodies sent to the model (`model request bytes`), and **application-side** MCP HTTP request counts. When a run ends, a `[summary]` table lists every turn and the totals. In a terminal, `[app -> MCP]` lines are yellow, `[timing]` elapsed-time lines are green, and `[turn]` lines are cyan. Redirected output stays plain, and setting `NO_COLOR` turns colors off. In Chat, expect a model tool request, a real MCP call, and another model request. In Responses with provider-hosted MCP, expect zero application-to-MCP requests even when approval requires additional model requests; the MCP server log shows the provider's tool execution instead.
 
 ### Is Responses faster?
 
-Not necessarily, and the demo should not claim it is. In a warm two-turn run on the same model, Chat Completions was often slightly faster. Your application opens its MCP connection before timing starts, while hosted MCP connects from Azure OpenAI during the turn, and with a tiny local tool each saved round trip is worth very little. Responses wins on other things: who runs the loop, request size, and model capability. Use `--long` (8 scripted turns, ending with a question that depends on the whole conversation) to show request size growing:
+Not necessarily, and the demo should not claim it is. In a warm two-turn run on the same model, Chat Completions was often slightly faster. Both modes run the model twice per turn (choose the tool, then answer); hosted MCP only moves those steps inside Azure. The app's MCP setup is timed in turn 1, but later turns reuse the open connection, while Azure OpenAI reconnects and lists tools on every hosted turn. With a tiny local tool and a fast network, each saved round trip is worth very little. Responses wins on other things: who runs the loop, request size, and model capability. Use `--long` (8 scripted turns, ending with a question that depends on the whole conversation) to show request size growing:
 
 ```powershell
 dotnet run --project dotnet/loop -- chat --stream --long
+dotnet run --project dotnet/loop -- responses --stream --long
 dotnet run --project dotnet/loop -- hosted-mcp --stream --auto-approve --long
 ```
 
-A sample run with `gpt-5.6-terra` and the Container Apps MCP server:
+Two runs per mode with `gpt-5.6-terra` and the Container Apps MCP server (app-side MCP setup counted in turn 1):
 
-| | Chat Completions | Responses with hosted MCP |
-| --- | --- | --- |
-| Model request bytes, turn 1 → turn 8 | 3,097 → 27,969 (grows every turn) | 739 → 814 (flat) |
-| Total model request bytes | 129,695 | 6,453 |
-| Model requests / app MCP requests | 16 / 8 | 8 / 0 |
-| Total elapsed | 26.0 s | 27.8 s |
+| | Chat Completions (app MCP) | Responses (app MCP) | Responses (hosted MCP) |
+| --- | --- | --- | --- |
+| Total model request bytes | 130,263 | 11,069 and 29,465 | 6,453 |
+| Request bytes, turn 1 → turn 8 | 3,105 → 28,344 (grows every turn) | flat; varies with tool calls | 739 → 814 (flat) |
+| Model requests / app MCP requests | 16 / 10 (2 setup + 8 calls) | 10 / 4 and 16 / 16 | 8 / 0 |
+| Total elapsed | 22.3 s and 23.2 s | 18.5 s and 30.8 s | 25.3 s and 45.5 s (three slow provider-side turns of 8–11 s) |
+
+Elapsed time varied by up to 20 seconds between runs of the same mode, mostly from provider response times and how many tool calls the model chose, so two runs cannot rank the modes by speed. With app-side MCP, Responses sometimes answered from the stored conversation without calling the tool. With hosted MCP, Azure OpenAI reconnects to the MCP server and lists tools on every turn, so it makes more MCP requests than the app-side modes, but your application makes none.
 
 Chat re-sends the entire conversation, including tool results, on every request. Responses sends only the new input plus `previous_response_id`. Fewer bytes sent does not mean fewer billed tokens: the service still processes the stored context, though cached input is typically cheaper. Some models restrict Chat Completions: for example, `gpt-6-astra` rejects function tools on `/chat/completions` but supports them on `/responses`.
 

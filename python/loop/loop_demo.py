@@ -162,24 +162,29 @@ async def main(args: argparse.Namespace) -> None:
         ))
         sdk = await stack.enter_async_context(AsyncOpenAI(api_key=api_key, base_url=base_url, http_client=model_http))
         client = (OpenAIChatCompletionClient if args.mode == "chat" else OpenAIChatClient)(model=deployment_name, async_client=sdk)
-        if hosted:
-            tools = [OpenAIChatClient.get_mcp_tool(
-                name="policy_kb", url=mcp_url, allowed_tools=["search_policy"],
-                approval_mode="never_require" if args.auto_approve else "always_require",
-                headers=headers or None,
-            )]
-        else:
-            mcp_http = await stack.enter_async_context(httpx.AsyncClient(
-                headers=headers, event_hooks={"request": [mcp_trace]}, follow_redirects=False,
-                timeout=httpx.Timeout(60),
-            ))
-            tool = await stack.enter_async_context(MCPStreamableHTTPTool(
-                name="policy_kb", url=mcp_url, allowed_tools=["search_policy"],
-                load_prompts=False, http_client=mcp_http,
-            ))
-            tools = [tool]
-        agent = Agent(client=client, instructions=INSTRUCTIONS, tools=tools)
-        session = agent.create_session()
+
+        async def create_agent() -> Agent:
+            # Runs inside the first turn's timing: app-side MCP setup (connect + list tools) is part of the
+            # application-owned loop's cost, just as the provider's MCP setup is inside each hosted turn.
+            if hosted:
+                tools = [OpenAIChatClient.get_mcp_tool(
+                    name="policy_kb", url=mcp_url, allowed_tools=["search_policy"],
+                    approval_mode="never_require" if args.auto_approve else "always_require",
+                    headers=headers or None,
+                )]
+            else:
+                mcp_http = await stack.enter_async_context(httpx.AsyncClient(
+                    headers=headers, event_hooks={"request": [mcp_trace]}, follow_redirects=False,
+                    timeout=httpx.Timeout(60),
+                ))
+                tool = await stack.enter_async_context(MCPStreamableHTTPTool(
+                    name="policy_kb", url=mcp_url, allowed_tools=["search_policy"],
+                    load_prompts=False, http_client=mcp_http,
+                ))
+                tools = [tool]
+            return Agent(client=client, instructions=INSTRUCTIONS, tools=tools)
+
+        agent = session = None
         approval = f" MCP approval: {'auto (never_require)' if args.auto_approve else 'prompt (always_require)'}." if hosted else ""
         print(f"Provider: Azure OpenAI. Mode: {args.mode}. MCP client: {'provider runtime' if hosted else 'this application'}. "
               f"State: {'local history replay' if args.mode == 'chat' else 'service-managed'}.{approval} Ctrl+C cancels.")
@@ -205,6 +210,9 @@ async def main(args: argparse.Namespace) -> None:
                 model_trace.bytes - bytes_before, mcp_trace.count - mcp_before,
             ))):
                 async with asyncio.timeout(120):
+                    if agent is None:
+                        agent = await create_agent()
+                        session = agent.create_session()
                     await run_turn(agent, session, prompt, args.stream)
                 print(paint(f"[turn] model HTTP requests={model_trace.count - model_before}; "
                             f"model request bytes={model_trace.bytes - bytes_before}; "
@@ -215,22 +223,24 @@ async def main(args: argparse.Namespace) -> None:
 async def run_menu() -> None:
     while True:
         print("\n1 - Chat Completions (our application calls MCP)")
-        print("2 - Responses (Azure OpenAI calls MCP; you confirm each call)")
-        print("3 - Responses (Azure OpenAI calls MCP; auto-approved)")
-        print("4 - Exit")
+        print("2 - Responses (our application calls MCP)")
+        print("3 - Responses (Azure OpenAI calls MCP; you confirm each call)")
+        print("4 - Responses (Azure OpenAI calls MCP; auto-approved)")
+        print("5 - Exit")
         try:
             choice = (await asyncio.to_thread(input, "Select: ")).strip()
         except EOFError:
             return
-        if choice == "4":
+        if choice == "5":
             return
-        if choice not in {"1", "2", "3"}:
-            print("Select 1, 2, 3, or 4.")
+        modes = {"1": "chat", "2": "responses", "3": "hosted-mcp", "4": "hosted-mcp"}
+        if choice not in modes:
+            print("Select 1, 2, 3, 4, or 5.")
             continue
         try:
             await main(argparse.Namespace(
-                mode="chat" if choice == "1" else "hosted-mcp",
-                stream=True, auto_approve=choice == "3", interactive=False, long=False,
+                mode=modes[choice],
+                stream=True, auto_approve=choice == "4", interactive=False, long=False,
             ))
         except EOFError:
             return
@@ -238,13 +248,14 @@ async def run_menu() -> None:
             print("Demo timed out. Returning to menu.", file=sys.stderr)
         except Exception as error:
             print(f"Demo failed ({type(error).__name__}). Check configuration, model support, and MCP availability. "
-                  "Responses requires a public HTTPS MCP URL. Returning to menu.", file=sys.stderr)
+                  "Hosted MCP requires a public HTTPS MCP URL. Returning to menu.", file=sys.stderr)
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Who Runs the Loop? Microsoft Agent Framework demo")
     parser.add_argument("mode", nargs="?", choices=["chat", "responses", "hosted-mcp"],
-                        help="Omit for the Chat / Responses / Responses (auto-approve) / Exit menu")
+                        help="Omit for the menu: Chat / Responses (app MCP) / Responses (hosted MCP, confirm) / "
+                             "Responses (hosted MCP, auto-approve) / Exit")
     parser.add_argument("--stream", action="store_true")
     parser.add_argument("--auto-approve", action="store_true", help="Allow the hosted read-only search tool without prompting")
     parser.add_argument("--interactive", action="store_true", help="Chat instead of running the two-turn demo")
