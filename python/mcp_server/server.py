@@ -1,6 +1,8 @@
 import argparse
+import json
 import logging
 import os
+import re
 import secrets
 from pathlib import Path
 
@@ -79,7 +81,40 @@ class BearerAuth:
                     headers={"WWW-Authenticate": "Bearer"},
                 )(scope, receive, send)
                 return
+            if scope["path"] == "/mcp" and scope["method"] == "POST":
+                receive = await log_rpc_methods(receive)
         await self.app(scope, receive, send)
+
+
+async def log_rpc_methods(receive: Receive) -> Receive:
+    """Logs JSON-RPC method names (never params or results), then replays the buffered body."""
+    message = await receive()
+    body = message.get("body", b"")
+    while message["type"] == "http.request" and message.get("more_body"):
+        message = await receive()
+        body += message.get("body", b"")
+    logging.getLogger("policy_mcp").info("MCP request: method=%s", rpc_methods(body))
+    replayed = False
+
+    async def replay():
+        nonlocal replayed
+        if replayed:
+            return await receive()
+        replayed = True
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    return replay
+
+
+def rpc_methods(body: bytes) -> str:
+    try:
+        payload = json.loads(body)
+    except ValueError:
+        return "invalid-json"
+    items = payload if isinstance(payload, list) else [payload]
+    # A JSON-RPC message without "method" is a client response (for example, to a server request).
+    names = (item.get("method", "response") if isinstance(item, dict) else "invalid" for item in items)
+    return ",".join(re.sub(r"[^\w/.-]", "?", str(name))[:64] for name in names)
 
 
 def create_app() -> ASGIApp:

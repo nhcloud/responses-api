@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import queue
 import re
@@ -28,7 +29,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 @contextmanager
-def dotnet_mcp_server(settings=None, assembly=None):
+def dotnet_mcp_server(settings=None, assembly=None, log=None):
     assembly = assembly or ROOT / "dotnet/mcp_server/bin/Debug/net10.0/PolicyMcpServer.dll"
     assert assembly.exists(), "Run dotnet build dotnet/mcp_server first"
     environment = os.environ | {
@@ -39,7 +40,7 @@ def dotnet_mcp_server(settings=None, assembly=None):
     with subprocess.Popen(["dotnet", str(assembly)], cwd=ROOT, env=environment,
                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True) as process:
         started = queue.Queue()
-        output = []
+        output = log if log is not None else []
 
         def read_output():
             for line in process.stdout:
@@ -64,10 +65,12 @@ def dotnet_mcp_server(settings=None, assembly=None):
 
 @pytest.fixture(params=["python", "dotnet"])
 def mcp_url(request, monkeypatch):
-    if request.param == "dotnet":
-        with dotnet_mcp_server() as url:
-            yield url
-        return
+    with (dotnet_mcp_server() if request.param == "dotnet" else python_mcp_server(monkeypatch)) as url:
+        yield url
+
+
+@contextmanager
+def python_mcp_server(monkeypatch):
     monkeypatch.setenv("MCP_AUTH_TOKEN", "test-token-not-a-secret")
     monkeypatch.setenv("MCP_HOST", "127.0.0.1")
     monkeypatch.setenv("MCP_PUBLIC_HOST", "policy.example.test")
@@ -504,6 +507,30 @@ def initialize_request():
         "protocolVersion": "2025-11-25", "capabilities": {},
         "clientInfo": {"name": "parity-test", "version": "1.0"},
     }}
+
+
+@pytest.mark.parametrize("language", ["python", "dotnet"])
+def test_mcp_server_logs_methods_not_arguments(language, monkeypatch, caplog):
+    caplog.set_level(logging.INFO, logger="policy_mcp")
+    log = []
+    server = dotnet_mcp_server(log=log) if language == "dotnet" else python_mcp_server(monkeypatch)
+    headers = {"Authorization": "Bearer test-token-not-a-secret", "Accept": "application/json, text/event-stream"}
+    with server as url:
+        assert httpx.post(url, json={"jsonrpc": "2.0", "id": 9, "method": "unauthenticated"}).status_code == 401
+        for message in (
+            initialize_request(),
+            {"jsonrpc": "2.0", "method": "notifications/initialized"},
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+            {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+             "params": {"name": "search_policy", "arguments": {"query": "private-query-text hotel"}}},
+        ):
+            response = httpx.post(url, json=message, headers=headers)
+            assert response.status_code in (200, 202), response.text
+        assert "TRAVEL-002" in response.text
+    text = "".join(log) + caplog.text
+    methods = re.findall(r"MCP request: method=(\S+)", text)
+    assert methods == ["initialize", "notifications/initialized", "tools/list", "tools/call"], text
+    assert "private-query-text" not in text
 
 
 def test_http_auth_and_host_protection(mcp_url):

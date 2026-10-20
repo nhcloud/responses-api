@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 
 if (args.Contains("--help"))
 {
@@ -50,6 +51,7 @@ webBuilder.Services.AddMcpServer(options => options.ServerInfo = ServerInfo())
     .WithTools<PolicyTools>();
 var app = webBuilder.Build();
 var expectedAuthorization = Encoding.UTF8.GetBytes($"Bearer {token}");
+var requestLogger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("PolicyMcp.Requests");
 app.Use(async (context, next) =>
 {
     if (context.Request.Path == "/healthz")
@@ -87,10 +89,41 @@ app.Use(async (context, next) =>
         }
     }
 
+    if (HttpMethods.IsPost(context.Request.Method) && context.Request.Path == "/mcp")
+    {
+        // Logs JSON-RPC method names only (never params or results), then rewinds the body for the MCP handler.
+        context.Request.EnableBuffering();
+        requestLogger.LogInformation("MCP request: method={Methods}", await RpcMethodsAsync(context.Request.Body, context.RequestAborted));
+        context.Request.Body.Position = 0;
+    }
+
     await next(context);
 });
 app.MapMcp("/mcp");
 await app.RunAsync();
+
+static async Task<string> RpcMethodsAsync(Stream body, CancellationToken cancellationToken)
+{
+    try
+    {
+        using var document = await JsonDocument.ParseAsync(body, cancellationToken: cancellationToken);
+        var items = document.RootElement.ValueKind == JsonValueKind.Array
+            ? document.RootElement.EnumerateArray().ToArray()
+            : [document.RootElement];
+        // A JSON-RPC message without "method" is a client response (for example, to a server request).
+        return string.Join(",", items.Select(item =>
+            item.ValueKind != JsonValueKind.Object ? "invalid"
+            : item.TryGetProperty("method", out var method) ? Sanitize(method.ToString())
+            : "response"));
+    }
+    catch (JsonException)
+    {
+        return "invalid-json";
+    }
+
+    static string Sanitize(string name) =>
+        new string(name.Take(64).Select(c => char.IsLetterOrDigit(c) || c is '_' or '/' or '.' or '-' ? c : '?').ToArray());
+}
 
 static Implementation ServerInfo() => new() { Name = "Who Runs the Loop - Policy KB", Version = "1.0.0" };
 
@@ -106,5 +139,6 @@ static void ConfigureLogging(ILoggingBuilder logging)
     logging.AddConsole(options => options.LogToStandardErrorThreshold = LogLevel.Trace);
     logging.SetMinimumLevel(LogLevel.Warning);
     logging.AddFilter("PolicyTools", LogLevel.Information);
+    logging.AddFilter("PolicyMcp.Requests", LogLevel.Information);
     logging.AddFilter("Microsoft.Hosting.Lifetime", LogLevel.Information);
 }
