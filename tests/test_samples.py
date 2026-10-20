@@ -514,7 +514,8 @@ def test_mcp_server_logs_methods_not_arguments(language, monkeypatch, caplog):
     caplog.set_level(logging.INFO, logger="policy_mcp")
     log = []
     server = dotnet_mcp_server(log=log) if language == "dotnet" else python_mcp_server(monkeypatch)
-    headers = {"Authorization": "Bearer test-token-not-a-secret", "Accept": "application/json, text/event-stream"}
+    headers = {"Authorization": "Bearer test-token-not-a-secret", "Accept": "application/json, text/event-stream",
+               "User-Agent": 'demo-client/1.0 "quoted"'}
     with server as url:
         assert httpx.post(url, json={"jsonrpc": "2.0", "id": 9, "method": "unauthenticated"}).status_code == 401
         for message in (
@@ -531,6 +532,9 @@ def test_mcp_server_logs_methods_not_arguments(language, monkeypatch, caplog):
     methods = re.findall(r"MCP request: method=(\S+)", text)
     assert methods == ["initialize", "notifications/initialized", "tools/list", "tools/call"], text
     assert "private-query-text" not in text
+    # Every line names the caller; initialize also carries the client's self-reported name and version.
+    assert text.count('user_agent="demo-client/1.0 ?quoted?"') == 4, text
+    assert re.findall(r'client_info="([^"]*)"', text) == ["parity-test/1.0"], text
 
 
 def test_http_auth_and_host_protection(mcp_url):

@@ -99,6 +99,8 @@ static async Task RunAsync(string[] arguments, CancellationToken cancellationTok
     using var modelHttp = new HttpClient(modelTrace);
     using var mcpTrace = new RequestTrace("app -> MCP", ConsoleColor.Yellow);
     using var mcpHttp = new HttpClient(mcpTrace);
+    // Identifies this app in the MCP server's log, next to Azure OpenAI's "openai-mcp/1.0.0 (Responses API)".
+    mcpHttp.DefaultRequestHeaders.UserAgent.ParseAdd("who-runs-the-loop-app/1.0 (.NET)");
     if (!string.IsNullOrEmpty(token))
         mcpHttp.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
 

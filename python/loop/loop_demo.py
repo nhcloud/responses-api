@@ -173,8 +173,10 @@ async def main(args: argparse.Namespace) -> None:
                     headers=headers or None,
                 )]
             else:
+                # The User-Agent identifies this app in the MCP server's log, next to "openai-mcp/1.0.0 (Responses API)".
                 mcp_http = await stack.enter_async_context(httpx.AsyncClient(
-                    headers=headers, event_hooks={"request": [mcp_trace]}, follow_redirects=False,
+                    headers=headers | {"User-Agent": "who-runs-the-loop-app/1.0 (Python)"},
+                    event_hooks={"request": [mcp_trace]}, follow_redirects=False,
                     timeout=httpx.Timeout(60),
                 ))
                 tool = await stack.enter_async_context(MCPStreamableHTTPTool(

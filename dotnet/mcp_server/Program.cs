@@ -91,9 +91,11 @@ app.Use(async (context, next) =>
 
     if (HttpMethods.IsPost(context.Request.Method) && context.Request.Path == "/mcp")
     {
-        // Logs JSON-RPC method names only (never params or results), then rewinds the body for the MCP handler.
+        // Logs the JSON-RPC method names and who sent them (never params or results), then rewinds the body.
         context.Request.EnableBuffering();
-        requestLogger.LogInformation("MCP request: method={Methods}", await RpcMethodsAsync(context.Request.Body, context.RequestAborted));
+        requestLogger.LogInformation("MCP request: {Request} user_agent=\"{UserAgent}\"",
+            await DescribeRpcAsync(context.Request.Body, context.RequestAborted),
+            Printable(context.Request.Headers.UserAgent.ToString(), 120));
         context.Request.Body.Position = 0;
     }
 
@@ -102,7 +104,7 @@ app.Use(async (context, next) =>
 app.MapMcp("/mcp");
 await app.RunAsync();
 
-static async Task<string> RpcMethodsAsync(Stream body, CancellationToken cancellationToken)
+static async Task<string> DescribeRpcAsync(Stream body, CancellationToken cancellationToken)
 {
     try
     {
@@ -111,19 +113,38 @@ static async Task<string> RpcMethodsAsync(Stream body, CancellationToken cancell
             ? document.RootElement.EnumerateArray().ToArray()
             : [document.RootElement];
         // A JSON-RPC message without "method" is a client response (for example, to a server request).
-        return string.Join(",", items.Select(item =>
+        var text = "method=" + string.Join(",", items.Select(item =>
             item.ValueKind != JsonValueKind.Object ? "invalid"
-            : item.TryGetProperty("method", out var method) ? Sanitize(method.ToString())
+            : item.TryGetProperty("method", out var method) ? MethodName(method.ToString())
             : "response"));
+        // initialize carries the client's self-reported name and version: the clearest sign of who is calling.
+        foreach (var item in items)
+        {
+            if (item.ValueKind == JsonValueKind.Object &&
+                item.TryGetProperty("method", out var method) && method.ValueEquals("initialize") &&
+                item.TryGetProperty("params", out var parameters) && parameters.ValueKind == JsonValueKind.Object &&
+                parameters.TryGetProperty("clientInfo", out var client) && client.ValueKind == JsonValueKind.Object)
+            {
+                text += $" client_info=\"{Printable(Property(client, "name"), 64)}/{Printable(Property(client, "version"), 32)}\"";
+                break;
+            }
+        }
+        return text;
     }
     catch (JsonException)
     {
-        return "invalid-json";
+        return "method=invalid-json";
     }
 
-    static string Sanitize(string name) =>
+    static string MethodName(string name) =>
         new string(name.Take(64).Select(c => char.IsLetterOrDigit(c) || c is '_' or '/' or '.' or '-' ? c : '?').ToArray());
+
+    static string Property(JsonElement element, string name) =>
+        element.TryGetProperty(name, out var value) ? value.ToString() : "";
 }
+
+static string Printable(string value, int limit) =>
+    new string(value.Take(limit).Select(c => c is >= ' ' and <= '~' and not '"' and not '\\' ? c : '?').ToArray());
 
 static Implementation ServerInfo() => new() { Name = "Who Runs the Loop - Policy KB", Version = "1.0.0" };
 

@@ -1,15 +1,27 @@
 # Watching the MCP Traffic
 
-The demo's menu shows *who* calls the MCP server. The MCP server's own log shows *what* each caller sends. Both servers ([.NET](../dotnet/mcp_server/Program.cs) and [Python](../python/mcp_server/server.py)) log one line per JSON-RPC request, and one line per tool execution:
+The demo's menu claims to change *who* calls the MCP server. The MCP server's own log proves it. Both servers ([.NET](../dotnet/mcp_server/Program.cs) and [Python](../python/mcp_server/server.py)) log one line per JSON-RPC request, naming the method and the caller, plus one line per tool execution:
 
 ```text
-MCP request: method=initialize
-MCP request: method=tools/list
-MCP request: method=tools/call
+MCP request: method=initialize client_info="openai-mcp (Responses API)/1.0.0" user_agent="openai-mcp/1.0.0 (Responses API)"
+MCP request: method=tools/call user_agent="openai-mcp/1.0.0 (Responses API)"
 Executed search_policy; matches=4
 ```
 
-Only method names are logged, never tool arguments or results, so user questions stay out of the log. Requests rejected by bearer authentication are not logged.
+- `user_agent` is the HTTP `User-Agent` header, on every request.
+- `client_info` is the name and version the client reports in MCP's `initialize` request.
+
+Only method names and caller identity are logged, never tool arguments or results, so user questions stay out of the log. Requests rejected by bearer authentication are not logged.
+
+## Who is calling
+
+| Caller | `user_agent` | `client_info` |
+| --- | --- | --- |
+| Azure OpenAI, hosted MCP (menu options 3 and 4) | `openai-mcp/1.0.0 (Responses API)` | `openai-mcp (Responses API)/1.0.0` |
+| The .NET demo app (menu options 1 and 2) | `who-runs-the-loop-app/1.0 (.NET)` | `LoopDemo/1.0.0.0` |
+| The Python demo app (menu options 1 and 2) | `who-runs-the-loop-app/1.0 (Python)` | `mcp/0.1.0` (the MCP SDK default) |
+
+The demo apps set their `User-Agent` explicitly so they are easy to tell apart. Azure OpenAI's values were observed on the Azure deployment in October 2026 and may change.
 
 ## What to look for
 
@@ -28,8 +40,8 @@ The method sequence differs depending on who runs the MCP client. These sequence
 
 Run a server as described in the [README](../README.md#choose-an-mcp-server) and the lines appear in that server's terminal:
 
-- **Python:** `INFO:policy_mcp:MCP request: method=tools/call`
-- **.NET:** `info: PolicyMcp.Requests[0]` on one line, then `MCP request: method=tools/call` on the next
+- **Python:** `INFO:policy_mcp:MCP request: method=tools/call user_agent="..."`
+- **.NET:** `info: PolicyMcp.Requests[0]` on one line, then `MCP request: method=tools/call user_agent="..."` on the next
 
 Hosted MCP (menu options 3 and 4) needs a public HTTPS server, so to see Azure OpenAI's sequence, use the Azure deployment below.
 
@@ -47,26 +59,32 @@ The names above are the deploy script's defaults; use yours if you changed them.
 
 Add `| where ContainerAppName_s == "policy-mcp-dotnet"` (or `"policy-mcp-python"`) to any query to focus on one server.
 
-**MCP requests in order:**
-
-```kusto
-ContainerAppConsoleLogs_CL
-| where TimeGenerated > ago(30m)
-| where Log_s has "MCP request" or Log_s has "Executed search_policy"
-| extend Method = coalesce(extract(@"method=(\S+)", 1, Log_s), "tool executed")
-| project TimeGenerated, App = ContainerAppName_s, Method
-| order by TimeGenerated asc
-```
-
-**Request count per method:**
+**MCP requests in order, with the caller:**
 
 ```kusto
 ContainerAppConsoleLogs_CL
 | where TimeGenerated > ago(30m)
 | where Log_s has "MCP request"
-| extend Method = extract(@"method=(\S+)", 1, Log_s)
-| summarize Requests = count() by App = ContainerAppName_s, Method
-| order by App asc, Requests desc
+| extend Method = extract(@"method=(\S+)", 1, Log_s), UserAgent = extract(@'user_agent="([^"]*)"', 1, Log_s)
+| extend Caller = case(UserAgent startswith "openai-mcp", "Azure OpenAI (hosted MCP)",
+                       UserAgent startswith "who-runs-the-loop-app", "Our app",
+                       UserAgent)
+| project TimeGenerated, Server = ContainerAppName_s, Caller, Method
+| order by TimeGenerated asc
+```
+
+**Request count per caller and method:**
+
+```kusto
+ContainerAppConsoleLogs_CL
+| where TimeGenerated > ago(30m)
+| where Log_s has "MCP request"
+| extend Method = extract(@"method=(\S+)", 1, Log_s), UserAgent = extract(@'user_agent="([^"]*)"', 1, Log_s)
+| extend Caller = case(UserAgent startswith "openai-mcp", "Azure OpenAI (hosted MCP)",
+                       UserAgent startswith "who-runs-the-loop-app", "Our app",
+                       UserAgent)
+| summarize Requests = count() by Caller, Method
+| order by Caller asc, Requests desc
 ```
 
 **Handshake time before each hosted tool call** (one server at a time, because `prev()` compares neighboring rows):
@@ -108,6 +126,6 @@ ContainerAppConsoleLogs_CL
 
 1. Point `MCP_SERVER_URL` at your deployed server and run menu option **1** (Chat Completions, your app calls MCP).
 2. Run menu option **4** (Responses, Azure OpenAI calls MCP, auto-approved).
-3. Wait a couple of minutes, then run the "MCP requests in order" query.
+3. Wait a couple of minutes, then run the "MCP requests in order, with the caller" query.
 
-You should see one handshake followed by single `tools/call` requests for option 1, and `initialize` + `tools/call` pairs for option 4. The loop's own `[turn]` line shows the other side: option 1 counts the MCP requests your app made, and option 4 shows `app MCP HTTP requests=0`.
+You should see **Our app** send one handshake followed by single `tools/call` requests for option 1, and **Azure OpenAI (hosted MCP)** send `initialize` + `tools/call` pairs for option 4. The loop's own `[turn]` line shows the other side: option 1 counts the MCP requests your app made, and option 4 shows `app MCP HTTP requests=0`.

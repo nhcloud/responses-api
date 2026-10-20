@@ -82,18 +82,18 @@ class BearerAuth:
                 )(scope, receive, send)
                 return
             if scope["path"] == "/mcp" and scope["method"] == "POST":
-                receive = await log_rpc_methods(receive)
+                receive = await log_rpc_request(receive, headers.get(b"user-agent", b"").decode("latin-1"))
         await self.app(scope, receive, send)
 
 
-async def log_rpc_methods(receive: Receive) -> Receive:
-    """Logs JSON-RPC method names (never params or results), then replays the buffered body."""
+async def log_rpc_request(receive: Receive, user_agent: str) -> Receive:
+    """Logs the JSON-RPC method names and who sent them (never params or results), then replays the body."""
     message = await receive()
     body = message.get("body", b"")
     while message["type"] == "http.request" and message.get("more_body"):
         message = await receive()
         body += message.get("body", b"")
-    logging.getLogger("policy_mcp").info("MCP request: method=%s", rpc_methods(body))
+    logging.getLogger("policy_mcp").info('MCP request: %s user_agent="%s"', describe_rpc(body), printable(user_agent, 120))
     replayed = False
 
     async def replay():
@@ -106,15 +106,24 @@ async def log_rpc_methods(receive: Receive) -> Receive:
     return replay
 
 
-def rpc_methods(body: bytes) -> str:
+def describe_rpc(body: bytes) -> str:
     try:
         payload = json.loads(body)
     except ValueError:
-        return "invalid-json"
-    items = payload if isinstance(payload, list) else [payload]
+        return "method=invalid-json"
+    items = [item if isinstance(item, dict) else {"method": "invalid"} for item in (payload if isinstance(payload, list) else [payload])]
     # A JSON-RPC message without "method" is a client response (for example, to a server request).
-    names = (item.get("method", "response") if isinstance(item, dict) else "invalid" for item in items)
-    return ",".join(re.sub(r"[^\w/.-]", "?", str(name))[:64] for name in names)
+    text = "method=" + ",".join(re.sub(r"[^\w/.-]", "?", str(item.get("method", "response")))[:64] for item in items)
+    # initialize carries the client's self-reported name and version: the clearest sign of who is calling.
+    client = next((item["params"].get("clientInfo") for item in items
+                   if item.get("method") == "initialize" and isinstance(item.get("params"), dict)), None)
+    if isinstance(client, dict):
+        text += f' client_info="{printable(client.get("name"), 64)}/{printable(client.get("version"), 32)}"'
+    return text
+
+
+def printable(value, limit: int) -> str:
+    return re.sub(r'[^\x20-\x7e]|["\\]', "?", str(value or ""))[:limit]
 
 
 def create_app() -> ASGIApp:
